@@ -135,7 +135,7 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
     // Initialize canvas rendering hook
     const { drawShapes } = useCanvasRendering({
       canvasRef,
-      roughCanvasRef,
+      roughCanvasRef: roughCanvasRef as React.RefObject<RoughJsCanvas>,
       shapes,
       currentShape,
       selectedId,
@@ -183,7 +183,7 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
 
         if (selectedTool === "Pan") {
           cursor = isPanning ? "grabbing" : "grab";
-        } else if (selectedTool !== "Select" && selectedTool !== "Pan") {
+        } else if (selectedTool !== "Select") {
           cursor = "crosshair";
         }
 
