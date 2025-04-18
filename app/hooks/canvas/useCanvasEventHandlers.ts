@@ -156,7 +156,18 @@ export const useCanvasEventHandlers = ({
         points: [x, y],
         fill: fillColor, // Add the fill color to the initial attributes
       };
-      const newShape = createShape(tool, initialAttrs, color);
+
+      // Only pass drawable shape types to createShape
+      const drawableTool = tool as
+        | "Freehand"
+        | "Line"
+        | "Square"
+        | "Circle"
+        | "Diamond"
+        | "Text"
+        | "Arrow"
+        | "Group";
+      const newShape = createShape(drawableTool, initialAttrs, color);
 
       if (newShape) {
         // Set in-progress flag
@@ -476,7 +487,7 @@ export const useCanvasEventHandlers = ({
    * Handle mouse move event
    */
   const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+    (e: any) => {
       // Check if this is a pan operation
       if (
         e.action === "pan" &&
@@ -598,7 +609,7 @@ export const useCanvasEventHandlers = ({
    * Handle mouse up event
    */
   const handleMouseUp = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
+    (e: any) => {
       // Reset mouse down state
       isMouseDownRef.current = false;
       // Reset drawing intent

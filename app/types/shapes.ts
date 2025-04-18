@@ -182,3 +182,8 @@ export interface SerializedShape {
   attrs: any;
   className: string;
 }
+
+export interface AlignmentGuide {
+  position: number;
+  orientation: "horizontal" | "vertical";
+}

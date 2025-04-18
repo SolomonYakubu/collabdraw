@@ -28,7 +28,6 @@ export const defaultRoughOptions: Options = {
   bowing: 1, // Add slight curve to lines
   curveFitting: 0.95, // Smoother curves
   curveStepCount: 9, // More points for smoother curves
-  seed: 0, // Deterministic seed for consistent rendering
 };
 
 /**
@@ -170,20 +169,18 @@ export const getRoughOptions = (shape: Shape): Options => {
 
   if (shape.fill && shape.fill !== "transparent") {
     roughOptions.fill = shape.fill;
+    // Default to sketchy 'hachure' fill style instead of solid
     roughOptions.fillStyle = shape.roughOptions?.fillStyle || "hachure";
 
-    // If the shape has a preset hachureAngle or gap, preserve it
-    if (shape.roughOptions?.hachureAngle !== undefined) {
-      roughOptions.hachureAngle = shape.roughOptions.hachureAngle;
-    }
-    if (shape.roughOptions?.hachureGap !== undefined) {
-      roughOptions.hachureGap = shape.roughOptions.hachureGap;
-    }
-    if (shape.roughOptions?.fillWeight !== undefined) {
-      roughOptions.fillWeight = shape.roughOptions.fillWeight;
-    }
-    if (shape.roughOptions?.roughness !== undefined) {
-      roughOptions.roughness = shape.roughOptions.roughness;
+    // Set additional sketchy fill parameters if not explicitly provided
+    if (
+      roughOptions.fillStyle === "hachure" &&
+      !(shape.roughOptions as any)?.hachureAngle
+    ) {
+      (roughOptions as any).hachureAngle = Math.random() * 60 + 30; // Random angle between 30-90 degrees
+      roughOptions.hachureGap = 5; // Tighter hatching for sketch effect
+      roughOptions.fillWeight = 0.5; // Lighter fill lines
+      roughOptions.roughness = 1.8; // Increased roughness for sketchier look
     }
   }
 
@@ -289,7 +286,7 @@ export const drawShape = (
     case "Group":
       // Group shapes don't need to be rendered directly
       // We just draw a bounding box to indicate grouping
-      const groupShape = shape as GroupShape;
+      const groupShape = shape as Shape;
       context.strokeStyle = "#4285f4";
       context.setLineDash([5, 5]);
       context.strokeRect(shape.x, shape.y, shape.width, shape.height);
@@ -405,8 +402,8 @@ export const drawDiamond = (
   const centerX = shape.x + shape.width / 2;
   const centerY = shape.y + shape.height / 2;
 
-  // Calculate the four points of the diamond
-  const points = [
+  // Calculate the four points of the diamond with proper typing
+  const points: [number, number][] = [
     [centerX, shape.y], // top point
     [shape.x + shape.width, centerY], // right point
     [centerX, shape.y + shape.height], // bottom point
@@ -669,6 +666,15 @@ export const getShapeBoundingBox = (shape: Shape): BoundingBox => {
         height: shape.fontSize ?? 20,
       };
     }
+    default: {
+      // Default case for any unexpected shape types
+      return {
+        x: shape.x || 0,
+        y: shape.y || 0,
+        width: shape.width || 0,
+        height: shape.height || 0,
+      };
+    }
   }
 };
 
@@ -889,7 +895,7 @@ export const handleEraserAction = (
       // Default fallback for any other shape type
       return isPointInShape(x, y, shape).isInside;
     })
-    .map((shape) => shape.id);
+    .map((shape) => shape.id.toString());
 };
 
 /**

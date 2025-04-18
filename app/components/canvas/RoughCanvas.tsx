@@ -76,7 +76,7 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
     ref
   ) => {
     const canvasRef = ref as React.RefObject<HTMLCanvasElement>;
-    const roughCanvasRef = useRef<RoughJsCanvas>(null!);
+    const roughCanvasRef = useRef<RoughJsCanvas | null>(null);
     const [isMouseDown, setIsMouseDown] = useState(false);
     const lastPanPositionRef = useRef({ x: 0, y: 0 });
 
@@ -183,9 +183,7 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
 
         if (selectedTool === "Pan") {
           cursor = isPanning ? "grabbing" : "grab";
-        } else if (selectedTool === "Select") {
-          cursor = "default";
-        } else {
+        } else if (selectedTool !== "Select" && selectedTool !== "Pan") {
           cursor = "crosshair";
         }
 
@@ -571,11 +569,12 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
                 : "crosshair",
             touchAction: "none", // Prevents scrolling on mobile
             position: isInfiniteCanvas ? "absolute" : "relative",
-            left: 0,
-            top: 0,
-            transform: "none",
-            width: isInfiniteCanvas ? "100%" : width,
-            height: isInfiniteCanvas ? "100%" : height,
+            left: isInfiniteCanvas ? "50%" : 0,
+            top: isInfiniteCanvas ? "50%" : 0,
+            transform: isInfiniteCanvas
+              ? `translate(-50%, -50%) translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`
+              : "none",
+            transformOrigin: "center center",
             backgroundColor: "white",
             boxShadow: isInfiniteCanvas
               ? "0 0 0 1px rgba(0,0,0,0.05), 0 4px 10px rgba(0,0,0,0.1)"

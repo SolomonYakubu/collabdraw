@@ -1,12 +1,15 @@
 /**
  * Service for managing canvas history (undo/redo functionality)
  */
-import { HistoryEntry } from "../../types/canvas";
+
 import { Shape } from "../../types/shapes";
 
 // Maximum history size to prevent memory issues
 const MAX_HISTORY_SIZE = 50;
-
+interface HistoryEntry {
+  shapes: Shape[];
+  timestamp: number;
+}
 /**
  * Create a new history entry
  */

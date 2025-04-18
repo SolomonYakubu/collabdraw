@@ -18,7 +18,11 @@ import { useHistory } from "../hooks/canvas/useHistory";
 import { useTextEditing } from "../hooks/canvas/useTextEditing";
 import { useCollaborationContext } from "../context/CollaborationContext";
 import { FiUsers, FiZoomIn, FiZoomOut, FiMaximize2 } from "react-icons/fi";
-
+interface User {
+  id: string;
+  tag: string;
+  cursor?: { x: number; y: number };
+}
 interface CanvasProps {
   width?: number;
   height?: number;
@@ -37,7 +41,7 @@ const Canvas: React.FC<CanvasProps> = ({
 }) => {
   // References
   const canvasRef = useRef<HTMLCanvasElement>(null!);
-  const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null!);
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -463,7 +467,7 @@ const Canvas: React.FC<CanvasProps> = ({
 
     // Notify collaborators if in collaborative mode
     if (isCollaborative && isConnected && sendShapeDeletion) {
-      sendShapeDeletion(selectedId);
+      sendShapeDeletion([selectedId as string]);
     }
 
     // Close context menu
@@ -512,9 +516,10 @@ const Canvas: React.FC<CanvasProps> = ({
               fill: color,
               roughOptions: {
                 ...(shape.roughOptions || {}),
-                fillStyle: color !== "transparent" ? "hachure" : undefined,
+                fillStyle:
+                  color !== "transparent" ? ("hachure" as const) : undefined,
                 roughness: 2.5,
-                fillWeight: 2,
+                fillWeight: 2 as any, // Cast to any to avoid type error
                 hachureAngle: Math.random() * 60 + 30, // Random angle between 30-90 degrees
                 hachureGap: 5, // Smaller gap for more visible hatching
                 disableMultiStroke: false, // Enable multiple strokes
@@ -524,10 +529,10 @@ const Canvas: React.FC<CanvasProps> = ({
 
             // Notify collaborators if needed
             if (isCollaborative && isConnected && sendShapeUpdate) {
-              sendShapeUpdate(updatedShape);
+              sendShapeUpdate(updatedShape as Shape);
             }
 
-            return updatedShape;
+            return updatedShape as Shape;
           }
           return shape;
         })
@@ -660,7 +665,7 @@ const Canvas: React.FC<CanvasProps> = ({
 
         // Notify collaborators if in collaborative mode
         if (isCollaborative && isConnected && sendShapeDeletion) {
-          sendShapeDeletion(selectedId);
+          sendShapeDeletion([selectedId as string]);
         }
       }
     };
@@ -740,7 +745,7 @@ const Canvas: React.FC<CanvasProps> = ({
       newShapes.splice(index + 1, 0, shapeToMove);
 
       // Notify collaborators if needed
-      if (isCollaborative && isConnected && sendShapeUpdate) {
+      if (isCollaborative && isConnected) {
         // We need to update with the full new shapes array for proper ordering
         sendCanvasData(newShapes);
       }
@@ -778,7 +783,7 @@ const Canvas: React.FC<CanvasProps> = ({
       newShapes.splice(index - 1, 0, shapeToMove);
 
       // Notify collaborators if needed
-      if (isCollaborative && isConnected && sendShapeUpdate) {
+      if (isCollaborative && isConnected) {
         // We need to update with the full new shapes array for proper ordering
         sendCanvasData(newShapes);
       }
@@ -812,7 +817,7 @@ const Canvas: React.FC<CanvasProps> = ({
       newShapes.push(shapeToMove); // Add to end (top of stack)
 
       // Notify collaborators if needed
-      if (isCollaborative && isConnected && sendShapeUpdate) {
+      if (isCollaborative && isConnected) {
         // We need to update with the full new shapes array for proper ordering
         sendCanvasData(newShapes);
       }
@@ -846,7 +851,7 @@ const Canvas: React.FC<CanvasProps> = ({
       newShapes.unshift(shapeToMove); // Add to beginning (bottom of stack)
 
       // Notify collaborators if needed
-      if (isCollaborative && isConnected && sendShapeUpdate) {
+      if (isCollaborative && isConnected) {
         // We need to update with the full new shapes array for proper ordering
         sendCanvasData(newShapes);
       }
@@ -956,7 +961,9 @@ const Canvas: React.FC<CanvasProps> = ({
           enableDragWithoutSelect={true}
           cursors={
             isCollaborative
-              ? users.reduce((acc, user) => {
+              ? (users as User[]).reduce<
+                  Record<string, { x: number; y: number }>
+                >((acc, user) => {
                   if (user && user.id && user.cursor) {
                     acc[user.id] = user.cursor;
                   }
