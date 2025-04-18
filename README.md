@@ -1,36 +1,141 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CollabDraw
+
+An open-source collaborative drawing application inspired by Excalidraw, built with Next.js and Canvas API. Create beautiful hand-drawn diagrams and collaborate in real-time with others.
+
+## Features
+
+- 🎨 Draw shapes with a hand-drawn, sketchy feel using Rough.js
+- ✏️ Multiple drawing tools:
+  - Freehand drawing
+  - Lines and Arrows
+  - Rectangles and Circles (hold Shift for perfect squares/circles)
+  - Text annotations
+  - Eraser tool
+- 🎯 Smart shape manipulation:
+  - Drag and drop with snapping to other shapes
+  - Resize with handles
+  - Hold Shift for constrained angles (15° increments)
+  - Grid snapping for precise placement
+- 🤝 Real-time collaboration features:
+  - See other users' cursors
+  - Synchronized drawing state
+  - Live shape updates
+- ⚡ Performance optimized:
+  - Canvas-based rendering
+  - Efficient state management
+  - Smooth drawing experience
+- 🔄 Undo/Redo functionality
+- 💾 History management
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18.0 or later
+- npm or yarn
+
+### Installation
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/yourusername/collabdraw2.git
+cd collabdraw2
+```
+
+2. Install dependencies:
+
+```bash
+npm install
+# or
+yarn install
+```
+
+3. Run the development server:
 
 ```bash
 npm run dev
 # or
 yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+4. Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Project Structure
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+collabdraw2/
+├── app/                    # Next.js app directory
+│   ├── components/        # React components
+│   │   ├── AppCursors.tsx   # Collaborative cursors
+│   │   ├── Canvas.tsx       # Main canvas component
+│   │   └── canvas/         # Canvas-related components
+│   ├── context/          # React context providers
+│   ├── hooks/            # Custom React hooks
+│   └── services/         # Business logic and services
+├── public/               # Static assets
+└── types/               # TypeScript type definitions
+```
 
-## Learn More
+## Contributing
 
-To learn more about Next.js, take a look at the following resources:
+We welcome contributions! Here's how you can help:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. Fork the repository
+2. Create a feature branch:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+git checkout -b feature/amazing-feature
+```
 
-## Deploy on Vercel
+3. Make your changes
+4. Run tests (if available) and ensure code quality:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm run lint
+npm run test
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+5. Commit your changes:
+
+```bash
+git commit -m 'Add amazing feature'
+```
+
+6. Push to your branch:
+
+```bash
+git push origin feature/amazing-feature
+```
+
+7. Open a Pull Request
+
+### Development Guidelines
+
+- Follow the existing code style
+- Write meaningful commit messages
+- Add comments for complex logic
+- Update documentation when needed
+- Test your changes thoroughly
+
+### Code Style
+
+- Use TypeScript for type safety
+- Follow the [React Hooks guidelines](https://reactjs.org/docs/hooks-rules.html)
+- Maintain component modularity
+- Use meaningful variable and function names
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- Inspired by [Excalidraw](https://excalidraw.com/)
+- Built with [Rough.js](https://roughjs.com/) for sketchy rendering
+- Uses [Next.js](https://nextjs.org/) for the framework
+- Real-time features powered by Socket.io
+
+## Support
+
+For support, please open an issue in the GitHub repository.
