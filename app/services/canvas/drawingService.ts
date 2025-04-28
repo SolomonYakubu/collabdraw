@@ -52,14 +52,17 @@ export const createShape = (
   attrs: any,
   color: string
 ): Shape | null => {
+  // Ensure color is always visible (not white or transparent)
+  const visibleColor = !color || color === "#ffffff" ? "#000000" : color;
+
   const baseShape = {
     id: generateShapeId(),
-    stroke: color,
+    stroke: visibleColor,
     strokeWidth: 2,
     fill: "transparent", // Add default fill
     roughOptions: {
       ...defaultRoughOptions,
-      stroke: color,
+      stroke: visibleColor,
     },
   };
 
@@ -142,10 +145,12 @@ export const createShape = (
         tool: "Text",
         x: attrs.x,
         y: attrs.y,
-        text: "", // Start with empty text
+        text: attrs.text || "", // Use provided text if available
         fontSize: attrs.fontSize || 20,
-        fontFamily: attrs.fontFamily || "Comic Sans MS",
-        fill: color,
+        fontFamily: attrs.fontFamily || "Arial, sans-serif", // Use a more universal font
+        fill: attrs.fill || visibleColor, // Use visibleColor to ensure text is always visible
+        width: attrs.width || 100, // Default width for better appearance
+        height: attrs.height || 30, // Default height for better appearance
         roughOptions: {
           ...defaultRoughOptions,
           roughness: 0.5, // Less rough for text
@@ -307,17 +312,19 @@ export const drawFreehandPath = (
 ) => {
   if (!shape.points.length) return;
 
+  // Convert to the format expected by perfect-freehand
   const points: [number, number][] = [];
   for (let i = 0; i < shape.points.length; i += 2) {
     points.push([shape.points[i], shape.points[i + 1]]);
   }
 
+  // Create a smoother stroke with better thinning and streamlining
   const stroke = getStroke(points, {
-    size: shape.strokeWidth * 2,
+    size: (shape.strokeWidth || 2) * 2,
     thinning: 0.5,
     smoothing: 0.5,
     streamline: 0.5,
-    easing: (t) => t, // Linear easing for more precise lines
+    easing: (t) => t,
     simulatePressure: false,
   });
 
@@ -329,15 +336,11 @@ export const drawFreehandPath = (
     context.moveTo(firstX, firstY);
 
     // Use quadratic curves for smoother lines
-    for (let i = 1; i < stroke.length - 1; i++) {
-      const [x0, y0] = stroke[i];
-      const [x1, y1] = stroke[i + 1];
-      const xc = (x0 + x1) / 2;
-      const yc = (y0 + y1) / 2;
-      context.quadraticCurveTo(x0, y0, xc, yc);
+    for (let i = 1; i < stroke.length; i++) {
+      const [x, y] = stroke[i];
+      context.lineTo(x, y);
     }
 
-    context.closePath();
     context.fill();
   }
 };
@@ -426,9 +429,13 @@ export const drawText = (
 
   // Set up text styling
   const fontSize = shape.fontSize || 20;
-  const fontFamily = shape.fontFamily || "Comic Sans MS";
+  const fontFamily = shape.fontFamily || "Arial, sans-serif";
   context.font = `${fontSize}px ${fontFamily}`;
-  context.fillStyle = shape.fill;
+
+  // Ensure fill color is visible - if white or transparent, use black instead
+  const fillColor =
+    shape.fill && shape.fill !== "#ffffff" ? shape.fill : "#000000";
+  context.fillStyle = fillColor;
   context.textBaseline = "top";
 
   // Split text into lines and calculate metrics
@@ -458,7 +465,7 @@ export const drawText = (
       const cursorX = shape.x + context.measureText(textBeforeCursor).width;
 
       // Draw cursor line
-      context.strokeStyle = shape.fill;
+      context.strokeStyle = fillColor;
       context.lineWidth = 2;
       context.beginPath();
       context.moveTo(cursorX, cursorY);

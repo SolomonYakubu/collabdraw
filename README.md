@@ -26,6 +26,8 @@ An open-source collaborative drawing application inspired by Excalidraw, built w
   - Smooth drawing experience
 - 🔄 Undo/Redo functionality
 - 💾 History management
+- ♾️ Infinite canvas for unrestricted creativity
+- 🤖 AI-powered drawing generation for enhanced productivity
 
 ## Getting Started
 
@@ -75,7 +77,10 @@ collabdraw2/
 │   └── services/         # Business logic and services
 ├── public/               # Static assets
 └── types/               # TypeScript type definitions
+├── ARCHITECTURE.md       # Detailed explanation of application flow and component interactions
 ```
+
+For a detailed explanation of how the components work together, see the [ARCHITECTURE.md](ARCHITECTURE.md) file.
 
 ## Contributing
 

@@ -23,10 +23,12 @@ import {
   FiGrid,
   FiLayers,
   FiDroplet,
+  FiCpu,
 } from "react-icons/fi";
 import { FaEraser, FaFillDrip } from "react-icons/fa";
 import { LuDiamond } from "react-icons/lu";
 import { RxDragHandleDots2 } from "react-icons/rx";
+import { LuSendHorizontal } from "react-icons/lu";
 
 interface ToolbarProps {
   selectedTool: ShapeType;
@@ -50,6 +52,11 @@ interface ToolbarProps {
   hasSelectedShape?: boolean;
   selectedShapeOptions?: { fillStyle?: string; roughness?: number };
   defaultFillStyle?: string;
+  // Add AI drawing props
+  aiPrompt?: string;
+  setAiPrompt?: (prompt: string) => void;
+  onGenerateWithAI?: () => void;
+  isAiGenerating?: boolean;
 }
 
 const Toolbar: React.FC<ToolbarProps> = ({
@@ -74,6 +81,11 @@ const Toolbar: React.FC<ToolbarProps> = ({
   hasSelectedShape,
   selectedShapeOptions,
   defaultFillStyle,
+  // AI props
+  aiPrompt = "",
+  setAiPrompt = () => {},
+  onGenerateWithAI = () => {},
+  isAiGenerating = false,
 }) => {
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [showFillColorPicker, setShowFillColorPicker] = useState(false);
@@ -81,6 +93,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
     null
   );
   const [animateTool, setAnimateTool] = useState<ShapeType | null>(null);
+  const [showAiInput, setShowAiInput] = useState(false);
 
   // Get the active fill color - either from selected shape or default
   const activeFillColor =
@@ -120,14 +133,24 @@ const Toolbar: React.FC<ToolbarProps> = ({
   useEffect(() => {
     if (showColorPicker) {
       setShowFillColorPicker(false);
+      setShowAiInput(false);
     }
   }, [showColorPicker]);
 
   useEffect(() => {
     if (showFillColorPicker) {
       setShowColorPicker(false);
+      setShowAiInput(false);
     }
   }, [showFillColorPicker]);
+
+  // Close color pickers when AI input is opened
+  useEffect(() => {
+    if (showAiInput) {
+      setShowColorPicker(false);
+      setShowFillColorPicker(false);
+    }
+  }, [showAiInput]);
 
   // Available drawing tools with improved icons using react-icons
   const tools: { id: ShapeType; label: string; icon: React.ReactNode }[] = [
@@ -216,90 +239,78 @@ const Toolbar: React.FC<ToolbarProps> = ({
   const textTools = tools.slice(8, 9); // Text
   const utilityTools = tools.slice(9); // Eraser
 
+  // Handle AI prompt keypress
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      onGenerateWithAI();
+    }
+  };
+
   return (
-    <div className="toolbar relative p-4 bg-white border border-gray-200 rounded-xl shadow-lg flex flex-wrap items-center gap-3 mb-4 backdrop-blur-sm z-40">
-      <div className="flex flex-col sm:flex-row gap-3 w-full">
-        {/* Top row with tools organized by category */}
-        <div className="flex flex-wrap items-center gap-2">
+    <>
+      <div className="toolbar relative px-4 py-2 bg-white border border-gray-200 rounded-xl shadow-lg flex items-center gap-3 mb-4 backdrop-blur-sm z-40">
+        {/* Tool Groups - Now horizontal */}
+        <div className="flex items-center gap-2">
           {/* Navigation tools */}
-          <div className="tools-group flex items-center gap-1 mr-2 px-1 py-1 bg-gray-50 rounded-lg">
+          <div className="tools-group flex items-center gap-1 bg-gray-50 rounded-lg px-1">
             {navigationTools.map((tool) => (
               <button
                 key={tool.id}
-                className={`tool-btn p-2.5 flex items-center justify-center rounded-lg transition-all ${
+                className={`tool-btn p-2 flex items-center justify-center rounded-lg transition-all ${
                   selectedTool === tool.id
                     ? "bg-blue-600 text-white shadow-sm"
                     : "text-gray-700 hover:bg-blue-50 hover:text-blue-600"
-                } ${animateTool === tool.id ? "tool-selected" : ""}`}
+                }`}
                 title={tool.label}
                 onClick={() => onSelectTool(tool.id)}
               >
                 {tool.icon}
-                <span className="sr-only">{tool.label}</span>
               </button>
             ))}
           </div>
 
           {/* Drawing tools */}
-          <div className="tools-group flex items-center gap-1 mr-2 px-1 py-1 bg-gray-50 rounded-lg">
+          <div className="tools-group flex items-center gap-1 bg-gray-50 rounded-lg px-1">
             {drawingTools.map((tool) => (
               <button
                 key={tool.id}
-                className={`tool-btn p-2.5 flex items-center justify-center rounded-lg transition-all ${
+                className={`tool-btn p-2 flex items-center justify-center rounded-lg transition-all ${
                   selectedTool === tool.id
                     ? "bg-blue-600 text-white shadow-sm"
                     : "text-gray-700 hover:bg-blue-50 hover:text-blue-600"
-                } ${animateTool === tool.id ? "tool-selected" : ""}`}
+                }`}
                 title={tool.label}
                 onClick={() => onSelectTool(tool.id)}
               >
                 {tool.icon}
-                <span className="sr-only">{tool.label}</span>
               </button>
             ))}
           </div>
 
-          {/* Text tools */}
-          <div className="tools-group flex items-center gap-1 mr-2 px-1 py-1 bg-gray-50 rounded-lg">
-            {textTools.map((tool) => (
+          {/* Text and Utility tools */}
+          <div className="tools-group flex items-center gap-1 bg-gray-50 rounded-lg px-1">
+            {[...textTools, ...utilityTools].map((tool) => (
               <button
                 key={tool.id}
-                className={`tool-btn p-2.5 flex items-center justify-center rounded-lg transition-all ${
+                className={`tool-btn p-2 flex items-center justify-center rounded-lg transition-all ${
                   selectedTool === tool.id
-                    ? "bg-blue-600 text-white shadow-sm"
+                    ? tool.id === "Eraser"
+                      ? "bg-red-600 text-white"
+                      : "bg-blue-600 text-white"
                     : "text-gray-700 hover:bg-blue-50 hover:text-blue-600"
-                } ${animateTool === tool.id ? "tool-selected" : ""}`}
+                }`}
                 title={tool.label}
                 onClick={() => onSelectTool(tool.id)}
               >
                 {tool.icon}
-                <span className="sr-only">{tool.label}</span>
               </button>
             ))}
           </div>
 
-          {/* Utility tools */}
-          <div className="tools-group flex items-center gap-1 mr-2 px-1 py-1 bg-gray-50 rounded-lg">
-            {utilityTools.map((tool) => (
-              <button
-                key={tool.id}
-                className={`tool-btn p-2.5 flex items-center justify-center rounded-lg transition-all ${
-                  selectedTool === tool.id
-                    ? "bg-red-600 text-white shadow-sm"
-                    : "text-gray-700 hover:bg-red-50 hover:text-red-600"
-                } ${animateTool === tool.id ? "tool-selected" : ""}`}
-                title={tool.label}
-                onClick={() => onSelectTool(tool.id)}
-              >
-                {tool.icon}
-                <span className="sr-only">{tool.label}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Color selectors */}
-          <div className="flex items-center gap-2 mr-2">
-            {/* Stroke color selector */}
+          {/* Color controls */}
+          <div className="flex items-center gap-1">
+            {/* Existing color pickers - keep their current implementation */}
             <div className="relative z-40">
               <button
                 className="h-10 w-10 rounded-lg border-2 flex items-center justify-center shadow-sm transition-all hover:scale-105 active:scale-95"
@@ -576,15 +587,12 @@ const Toolbar: React.FC<ToolbarProps> = ({
           </div>
         </div>
 
-        {/* Divider for small screens */}
-        <div className="sm:hidden w-full h-px bg-gray-200 my-2"></div>
-
-        {/* Right aligned actions */}
-        <div className="flex flex-wrap items-center gap-2 ml-auto">
-          {/* History controls with modern styling */}
-          <div className="flex gap-1 items-center mr-2 px-1 py-1 bg-gray-50 rounded-lg">
+        {/* Right side controls */}
+        <div className="flex items-center gap-2 ml-auto">
+          {/* History controls */}
+          <div className="flex items-center gap-1 bg-gray-50 rounded-lg px-1">
             <button
-              className={`p-2.5 rounded-lg flex items-center justify-center transition-colors ${
+              className={`p-2 rounded-lg ${
                 canUndo
                   ? "hover:bg-blue-50 text-gray-700 hover:text-blue-600"
                   : "text-gray-300 cursor-not-allowed"
@@ -592,13 +600,11 @@ const Toolbar: React.FC<ToolbarProps> = ({
               onClick={onUndo}
               disabled={!canUndo}
               title="Undo"
-              aria-label="Undo"
             >
-              <FiCornerUpLeft size={18} />
+              <FiCornerUpLeft size={16} />
             </button>
-
             <button
-              className={`p-2.5 rounded-lg flex items-center justify-center transition-colors ${
+              className={`p-2 rounded-lg ${
                 canRedo
                   ? "hover:bg-blue-50 text-gray-700 hover:text-blue-600"
                   : "text-gray-300 cursor-not-allowed"
@@ -606,71 +612,112 @@ const Toolbar: React.FC<ToolbarProps> = ({
               onClick={onRedo}
               disabled={!canRedo}
               title="Redo"
-              aria-label="Redo"
             >
-              <FiCornerUpRight size={18} />
-            </button>
-
-            <button
-              className="p-2.5 rounded-lg hover:bg-red-50 text-red-500 flex items-center justify-center transition-colors"
-              onClick={onClearCanvas}
-              title="Clear canvas"
-              aria-label="Clear canvas"
-            >
-              <FiTrash2 size={18} />
+              <FiCornerUpRight size={16} />
             </button>
           </div>
 
-          {/* Actions */}
-          <div className="flex items-center gap-3">
+          {/* Action buttons */}
+          <div className="flex items-center gap-1">
+            <div className="relative">
+              <button
+                className={`h-8 px-3 rounded-lg flex items-center gap-1.5 ${
+                  showAiInput
+                    ? "bg-purple-700 text-white"
+                    : "bg-purple-600 text-white hover:bg-purple-700"
+                }`}
+                onClick={() => setShowAiInput(!showAiInput)}
+                title="AI Drawing"
+              >
+                <FiCpu size={14} />
+                <span className="text-sm">AI</span>
+              </button>
+
+              {/* AI Drawing Dropdown */}
+              {showAiInput && (
+                <div className="absolute top-full right-0 mt-2 p-3 bg-white border border-gray-200 rounded-xl shadow-xl z-50 w-80 animate-fadeIn">
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-sm font-medium text-gray-900">
+                      AI Drawing Generator
+                    </h3>
+                    <button
+                      onClick={() => setShowAiInput(false)}
+                      className="text-gray-500 hover:text-gray-700"
+                    >
+                      <span className="sr-only">Close</span>×
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={aiPrompt}
+                      onChange={(e) => setAiPrompt(e.target.value)}
+                      onKeyPress={handleKeyPress}
+                      placeholder="Describe what to draw..."
+                      className="flex-1 h-9 px-3 rounded-lg border text-gray-900 border-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-300 text-sm"
+                      disabled={isAiGenerating}
+                    />
+                    <button
+                      onClick={() => {
+                        onGenerateWithAI();
+                        setShowAiInput(false);
+                      }}
+                      disabled={isAiGenerating || !aiPrompt.trim()}
+                      className={`px-3 rounded-lg flex items-center gap-2 ${
+                        isAiGenerating || !aiPrompt.trim()
+                          ? "bg-gray-200 text-gray-400"
+                          : "bg-gradient-to-r from-purple-600 to-indigo-600 text-white"
+                      }`}
+                    >
+                      {isAiGenerating ? (
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <LuSendHorizontal size={15} />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Add Clear Canvas button */}
             <button
-              className="h-9 px-4 rounded-lg bg-gradient-to-r from-blue-600 to-blue-700 text-white flex items-center gap-2 transition-all hover:translate-y-[-1px] hover:shadow-md active:translate-y-[1px]"
-              onClick={onSave}
-              title="Save as image"
-              aria-label="Save as image"
+              className="h-8 px-3 rounded-lg bg-red-500 text-white flex items-center gap-1.5 hover:bg-red-600"
+              onClick={onClearCanvas}
+              title="Clear canvas"
             >
-              <FiDownload size={15} />
-              <span className="text-sm font-medium hidden sm:inline">Save</span>
+              <FiTrash2 size={14} />
             </button>
 
+            <button
+              className="h-8 px-3 rounded-lg bg-blue-600 text-white flex items-center gap-1.5 hover:bg-blue-700"
+              onClick={onSave}
+              title="Save as image"
+            >
+              <FiDownload size={14} />
+            </button>
             {onGenerateLink && (
-              <div className="relative">
-                <button
-                  className="h-9 px-4 rounded-lg bg-gradient-to-r from-emerald-600 to-emerald-700 text-white flex items-center gap-2 transition-all hover:translate-y-[-1px] hover:shadow-md active:translate-y-[1px]"
-                  onClick={onGenerateLink}
-                  title="Share link"
-                  aria-label="Share link"
-                >
-                  <FiLink size={15} />
-                  <span className="text-sm font-medium hidden sm:inline">
-                    Share
-                  </span>
-                </button>
-                {showLinkCopied && (
-                  <div className="absolute -top-8 left-1/2 -translate-x-1/2 px-3 py-1.5 bg-black/90 text-white text-xs font-medium rounded-lg shadow-lg backdrop-blur-sm">
-                    Link copied
-                  </div>
-                )}
-              </div>
+              <button
+                className="h-8 px-3 rounded-lg bg-emerald-600 text-white flex items-center gap-1.5 hover:bg-emerald-700"
+                onClick={onGenerateLink}
+                title="Share link"
+              >
+                <FiLink size={14} />
+              </button>
             )}
-
             {toggleUserPanel && (
               <button
-                className="h-9 px-4 rounded-lg bg-gradient-to-r from-purple-600 to-purple-700 text-white flex items-center gap-2 transition-all hover:translate-y-[-1px] hover:shadow-md active:translate-y-[1px]"
+                className="h-8 px-3 rounded-lg bg-purple-600 text-white flex items-center gap-1.5 hover:bg-purple-700"
                 onClick={toggleUserPanel}
                 title="Users"
-                aria-label="Toggle users panel"
               >
-                <FiUsers size={15} />
-                <span className="text-sm font-medium hidden sm:inline">
-                  Users
-                </span>
+                <FiUsers size={14} />
               </button>
             )}
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 };
 

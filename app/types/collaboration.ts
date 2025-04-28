@@ -4,13 +4,6 @@
 
 import { Shape } from "./shapes";
 
-// Augment Window interface to include our timer property
-declare global {
-  interface Window {
-    __cursorUpdateTimer: number | null;
-  }
-}
-
 // Information about a connected user
 export interface User {
   id: string;

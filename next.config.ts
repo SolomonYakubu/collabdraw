@@ -9,6 +9,10 @@ const nextConfig: NextConfig = {
 
     return config;
   },
+  // Add environment variables configuration
+  env: {
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  },
 };
 
 export default nextConfig;

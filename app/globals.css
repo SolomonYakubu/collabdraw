@@ -1,6 +1,8 @@
 @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap");
 @import "tailwindcss";
 
+@tailwind utilities;
+
 :root {
   --background: #f8fafc;
   --foreground: #171717;
@@ -8,6 +10,9 @@
   --primary-hover: #2563eb;
   --secondary: #f1f5f9;
   --border: #e2e8f0;
+  --foreground-rgb: 0, 0, 0;
+  --background-start-rgb: 214, 219, 220;
+  --background-end-rgb: 255, 255, 255;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -223,6 +228,25 @@ canvas {
 
 .connection-indicator {
   animation: pulse 2s infinite;
+  position: relative;
+}
+
+.connection-indicator::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0.3;
+  animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes ping {
+  75%,
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
 }
 
 /* User panel animation */
@@ -247,14 +271,30 @@ canvas {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background-image: linear-gradient(
-      to right,
-      rgba(200, 200, 200, 0.1) 1px,
-      transparent 1px
-    ),
-    linear-gradient(to bottom, rgba(200, 200, 200, 0.1) 1px, transparent 1px);
-  background-size: 20px 20px;
   background-color: #f9fafb;
+  touch-action: none;
+  cursor: default;
+}
+
+.infinite-canvas-viewport {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.infinite-canvas-transform-layer {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.infinite-canvas-container::-webkit-scrollbar {
+  display: none;
 }
 
 .dark .infinite-canvas-container {
@@ -319,4 +359,9 @@ canvas {
   background-color: #1f2937;
   color: white;
   border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Add smooth transitions for pan and zoom */
+.infinite-canvas-container > div {
+  transition: transform 0.05s ease-out;
 }

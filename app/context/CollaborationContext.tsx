@@ -113,10 +113,14 @@ export const CollaborationContextProvider: React.FC<{
     const baseUrl = window.location.origin + window.location.pathname;
     setShareableLink(`${baseUrl}?roomId=${currentRoomId}`);
 
-    // Connect to socket server
-    const socket = io(
-      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001",
-      {
+    // Socket server URL
+    const socketUrl =
+      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
+    console.log(`Attempting to connect to socket server at: ${socketUrl}`);
+
+    try {
+      // Connect to socket server
+      const socket = io(socketUrl, {
         query: {
           roomId: currentRoomId,
           userId: storedUserId,
@@ -125,158 +129,180 @@ export const CollaborationContextProvider: React.FC<{
         reconnectionAttempts: 5,
         reconnectionDelay: 1000,
         transports: ["websocket", "polling"],
-      }
-    );
-
-    socketRef.current = socket;
-
-    // Connection events
-    socket.on("connect", () => {
-      console.log("Socket connected");
-      setIsConnected(true);
-
-      socket.emit("join-room", {
-        roomId: currentRoomId,
-        userId: storedUserId,
-        userTag: tag,
+        timeout: 10000, // Increase timeout to 10s
       });
-    });
 
-    socket.on("disconnect", () => {
-      console.log("Socket disconnected");
-      setIsConnected(false);
-    });
+      socketRef.current = socket;
 
-    // Users and canvas state
-    socket.on("active-users", (data) => {
-      setUsers(data.users);
-    });
+      // Connection events with better error handling
+      socket.on("connect", () => {
+        console.log("Socket connected successfully");
+        setIsConnected(true);
 
-    socket.on("canvas-state-sync", (data) => {
-      if (
-        data.userId !== storedUserId &&
-        data.shapes &&
-        Array.isArray(data.shapes)
-      ) {
-        console.log("Received initial canvas state:", data.shapes.length);
-        isProcessingUpdate.current = true;
-        setShapes(data.shapes);
-        setTimeout(() => {
-          isProcessingUpdate.current = false;
-        }, 100);
-      }
-    });
-
-    socket.on("request-canvas-state", (data) => {
-      socket.emit("canvas-state-response", {
-        roomId: currentRoomId,
-        userId: storedUserId,
-        targetUserId: data.targetUserId,
-        shapes: shapes,
-      });
-    });
-
-    // Collaboration events
-    socket.on("cursor-position", (data) => {
-      if (data.userId !== storedUserId) {
-        setCursors((prev) => ({
-          ...prev,
-          [data.userId]: {
-            x: data.x,
-            y: data.y,
-            tag: data.tag || "User",
-          },
-        }));
-      }
-    });
-
-    socket.on("shape-in-progress", (data) => {
-      if (data.userId !== storedUserId) {
-        console.log("Received in-progress shape from", data.userId);
-        setInProgressShapes((prev) => ({
-          ...prev,
-          [data.userId]: data.shape,
-        }));
-      }
-    });
-
-    socket.on("drawing-state", (data) => {
-      if (data.userId !== storedUserId && !data.isDrawing) {
-        console.log("User stopped drawing:", data.userId);
-        setInProgressShapes((prev) => {
-          const newState = { ...prev };
-          delete newState[data.userId];
-          return newState;
-        });
-      }
-    });
-
-    socket.on("canvas-update", (data) => {
-      if (data.userId !== storedUserId) {
-        isProcessingUpdate.current = true;
-
-        // Apply shape updates
-        if (data.shapes && Array.isArray(data.shapes)) {
-          if (data.fullUpdate) {
-            setShapes(data.shapes);
-          } else {
-            setShapes((prevShapes) => {
-              const newShapes = [...prevShapes];
-                data.shapes.forEach((incomingShape: Shape) => {
-                const index: number = newShapes.findIndex(
-                  (s: Shape) => s.id === incomingShape.id
-                );
-                if (index >= 0) {
-                  newShapes[index] = incomingShape;
-                } else {
-                  newShapes.push(incomingShape);
-                }
-                });
-              return newShapes;
-            });
-          }
-        }
-
-        // Handle shape deletions
-        if (data.deletedShapeIds && Array.isArray(data.deletedShapeIds)) {
-          setShapes((prevShapes) =>
-            prevShapes.filter(
-              (shape) => !data.deletedShapeIds.includes(shape.id)
-            )
-          );
-        }
-
-        setTimeout(() => {
-          isProcessingUpdate.current = false;
-        }, 100);
-      }
-    });
-
-    // Mouse move handler for cursor sharing
-    const handleMouseMove = (e: MouseEvent) => {
-      const now = Date.now();
-      if (now - lastMouseMoveTime.current < 50) return; // 50ms throttle
-
-      lastMouseMoveTime.current = now;
-
-      if (socket.connected && currentRoomId && storedUserId) {
-        socket.emit("cursor-position", {
+        socket.emit("join-room", {
           roomId: currentRoomId,
           userId: storedUserId,
-          x: e.clientX,
-          y: e.clientY,
-          tag: tag,
+          userTag: tag,
         });
-      }
-    };
+      });
 
-    document.addEventListener("mousemove", handleMouseMove);
+      socket.on("connect_error", (error) => {
+        console.error("Socket connection error:", error);
+        alert(
+          `Collaboration Error: Failed to connect to the socket server at ${socketUrl}. Please make sure the server is running.`
+        );
+        setIsConnected(false);
+      });
 
-    // Cleanup function
-    return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      socket.disconnect();
-    };
+      socket.on("connect_timeout", () => {
+        console.error("Socket connection timeout");
+        alert(
+          "Collaboration Error: Connection to the socket server timed out."
+        );
+        setIsConnected(false);
+      });
+
+      socket.on("disconnect", (reason) => {
+        console.log(`Socket disconnected: ${reason}`);
+        setIsConnected(false);
+      });
+
+      // Users and canvas state
+      socket.on("active-users", (data) => {
+        setUsers(data.users);
+      });
+
+      socket.on("canvas-state-sync", (data) => {
+        if (
+          data.userId !== storedUserId &&
+          data.shapes &&
+          Array.isArray(data.shapes)
+        ) {
+          console.log("Received initial canvas state:", data.shapes.length);
+          isProcessingUpdate.current = true;
+          setShapes(data.shapes);
+          setTimeout(() => {
+            isProcessingUpdate.current = false;
+          }, 100);
+        }
+      });
+
+      socket.on("request-canvas-state", (data) => {
+        socket.emit("canvas-state-response", {
+          roomId: currentRoomId,
+          userId: storedUserId,
+          targetUserId: data.targetUserId,
+          shapes: shapes,
+        });
+      });
+
+      // Collaboration events
+      socket.on("cursor-position", (data) => {
+        if (data.userId !== storedUserId) {
+          setCursors((prev) => ({
+            ...prev,
+            [data.userId]: {
+              x: data.x,
+              y: data.y,
+              tag: data.tag || "User",
+            },
+          }));
+        }
+      });
+
+      socket.on("shape-in-progress", (data) => {
+        if (data.userId !== storedUserId) {
+          console.log("Received in-progress shape from", data.userId);
+          setInProgressShapes((prev) => ({
+            ...prev,
+            [data.userId]: data.shape,
+          }));
+        }
+      });
+
+      socket.on("drawing-state", (data) => {
+        if (data.userId !== storedUserId && !data.isDrawing) {
+          console.log("User stopped drawing:", data.userId);
+          setInProgressShapes((prev) => {
+            const newState = { ...prev };
+            delete newState[data.userId];
+            return newState;
+          });
+        }
+      });
+
+      socket.on("canvas-update", (data) => {
+        if (data.userId !== storedUserId) {
+          isProcessingUpdate.current = true;
+
+          // Apply shape updates
+          if (data.shapes && Array.isArray(data.shapes)) {
+            if (data.fullUpdate) {
+              setShapes(data.shapes);
+            } else {
+              setShapes((prevShapes) => {
+                const newShapes = [...prevShapes];
+                data.shapes.forEach((incomingShape: Shape) => {
+                  const index: number = newShapes.findIndex(
+                    (s: Shape) => s.id === incomingShape.id
+                  );
+                  if (index >= 0) {
+                    newShapes[index] = incomingShape;
+                  } else {
+                    newShapes.push(incomingShape);
+                  }
+                });
+                return newShapes;
+              });
+            }
+          }
+
+          // Handle shape deletions
+          if (data.deletedShapeIds && Array.isArray(data.deletedShapeIds)) {
+            setShapes((prevShapes) =>
+              prevShapes.filter(
+                (shape) => !data.deletedShapeIds.includes(shape.id)
+              )
+            );
+          }
+
+          setTimeout(() => {
+            isProcessingUpdate.current = false;
+          }, 100);
+        }
+      });
+
+      // Mouse move handler for cursor sharing
+      const handleMouseMove = (e: MouseEvent) => {
+        const now = Date.now();
+        if (now - lastMouseMoveTime.current < 50) return; // 50ms throttle
+
+        lastMouseMoveTime.current = now;
+
+        if (socket.connected && currentRoomId && storedUserId) {
+          socket.emit("cursor-position", {
+            roomId: currentRoomId,
+            userId: storedUserId,
+            x: e.clientX,
+            y: e.clientY,
+            tag: tag,
+          });
+        }
+      };
+
+      document.addEventListener("mousemove", handleMouseMove);
+
+      // Cleanup function
+      return () => {
+        document.removeEventListener("mousemove", handleMouseMove);
+        socket.disconnect();
+      };
+    } catch (error) {
+      console.error("Error initializing socket connection:", error);
+      alert(
+        `Collaboration Error: An unexpected error occurred while trying to connect to the socket server at ${socketUrl}.`
+      );
+    }
   }, [isClient]);
 
   // Update shapes ref when state changes

@@ -32,14 +32,14 @@ export default function Home() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center p-5 lg:p-10">
-      <div className="max-w-7xl w-full">
-        <header className="mb-6">
+    <main className="flex min-h-screen flex-col items-center ">
+      <div className=" w-full">
+        {/* <header className="mb-6">
           <h1 className="text-2xl md:text-3xl font-bold">CollabDraw</h1>
           <p className="text-gray-600">Real-time collaborative drawing board</p>
-        </header>
+        </header> */}
 
-        <div className="bg-gray-50 p-4 rounded-lg">
+        <div className="bg-gray-50 p-4 ">
           <Canvas
             width={canvasSize.width}
             height={canvasSize.height}

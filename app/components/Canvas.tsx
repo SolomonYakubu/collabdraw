@@ -8,6 +8,8 @@ import { Shape, ShapeType } from "../types/shapes";
 import {
   canvasToDataURL,
   isPointInShape,
+  generateShapeId,
+  createShape,
 } from "../services/canvas/drawingService";
 import RoughCanvas from "./canvas/RoughCanvas";
 import Toolbar from "./canvas/ui/Toolbar";
@@ -66,6 +68,7 @@ const Canvas: React.FC<CanvasProps> = ({
     sendShapeInProgress,
     sendDrawingState,
     userId,
+    roomId,
     shapes,
     setShapes,
   } = useCollaborationContext();
@@ -117,6 +120,14 @@ const Canvas: React.FC<CanvasProps> = ({
 
   // State to track the default fill style for new shapes
   const [defaultFillStyle, setDefaultFillStyle] = useState<string>("hachure");
+
+  // AI drawing state
+  const [aiPrompt, setAiPrompt] = useState<string>("");
+  const [isAiGenerating, setIsAiGenerating] = useState<boolean>(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiChatHistory, setAiChatHistory] = useState<
+    Array<{ role: string; parts: Array<{ text: string }> }>
+  >([]);
 
   // Update the ref when isDragging changes
   useEffect(() => {
@@ -872,6 +883,201 @@ const Canvas: React.FC<CanvasProps> = ({
     sendCanvasData,
   ]);
 
+  // Handle AI drawing generation
+  const handleGenerateWithAI = useCallback(async () => {
+    if (!aiPrompt.trim() || isAiGenerating) return;
+
+    setIsAiGenerating(true);
+    setAiError(null);
+
+    try {
+      // Add the current user prompt to chat history
+      const userPrompt = {
+        role: "user",
+        parts: [{ text: aiPrompt }],
+      };
+
+      // Updated history with the new user prompt
+      const updatedHistory = [...aiChatHistory, userPrompt];
+
+      // Serialize the current canvas state to include with the prompt
+      const currentCanvasState = shapes.map((shape) => {
+        // Create a simplified version of each shape with essential properties
+        const simplifiedShape = {
+          tool: shape.tool,
+          id: shape.id,
+          x: shape.x,
+          y: shape.y,
+          stroke: shape.stroke,
+          fill: shape.fill || "transparent",
+        };
+
+        // Add specific properties based on the shape type
+        if ("width" in shape && "height" in shape) {
+          Object.assign(simplifiedShape, {
+            width: shape.width,
+            height: shape.height,
+          });
+        }
+
+        if ("x1" in shape && "y1" in shape && "x2" in shape && "y2" in shape) {
+          Object.assign(simplifiedShape, {
+            x1: shape.x1,
+            y1: shape.y1,
+            x2: shape.x2,
+            y2: shape.y2,
+          });
+        }
+
+        if ("points" in shape && Array.isArray(shape.points)) {
+          Object.assign(simplifiedShape, {
+            points: shape.points.slice(0, 20), // Limit points to avoid huge payloads
+          });
+        }
+
+        if (shape.tool === "Text" && "text" in shape) {
+          Object.assign(simplifiedShape, { text: shape.text });
+        }
+
+        return simplifiedShape;
+      });
+
+      const response = await fetch("/api/generate-drawing", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt: aiPrompt,
+          currentState: currentCanvasState,
+          history: updatedHistory,
+          // Add collaboration information for broadcasting
+          userId: userId || nanoid(8),
+          roomId: isCollaborative ? roomId : null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to generate drawing");
+      }
+
+      const data = await response.json();
+
+      if (data.shapes && Array.isArray(data.shapes)) {
+        // Add the assistant's response to chat history
+        const assistantResponse = {
+          role: "model",
+          parts: [{ text: JSON.stringify(data.shapes) }],
+        };
+
+        // Update chat history state with both the prompt and response
+        setAiChatHistory([...updatedHistory, assistantResponse]);
+
+        // Check if there's a special ClearCanvas shape, which indicates we should clear the canvas first
+        const shouldClearCanvas = data.shapes.some(
+          (shapeData: any) => shapeData.tool === "ClearCanvas"
+        );
+
+        // If requested to clear canvas, do it before adding new shapes
+        if (shouldClearCanvas) {
+          clear();
+        }
+
+        // Filter out any ClearCanvas shapes (they're just signals, not actual shapes to draw)
+        const shapesToProcess = data.shapes.filter(
+          (shapeData: any) => shapeData.tool !== "ClearCanvas"
+        );
+
+        // Process AI-generated shapes
+        const newShapes = shapesToProcess
+          .map((shapeData: any) => {
+            // Use the ID generated in the API if available, otherwise create a new ID
+            const id = shapeData.id || `ai_${nanoid(10)}`;
+
+            // Create a valid shape with proper ID
+            const shape = createShape(
+              shapeData.tool,
+              {
+                ...shapeData,
+                id,
+              },
+              shapeData.stroke || selectedColor
+            );
+
+            // Ensure shape is valid
+            if (shape) {
+              // Apply fill and any custom options if provided
+              if (shapeData.fill) {
+                shape.fill = shapeData.fill;
+              }
+
+              // For freehand tool, ensure we have enough points for smooth curves
+              if (shape.tool === "Freehand" && shape.points.length < 6) {
+                // For very short point arrays, duplicate some points to ensure
+                // the curve is rendered properly
+                const extraPoints = [];
+                for (let i = 0; i < shape.points.length - 2; i += 2) {
+                  extraPoints.push(
+                    shape.points[i],
+                    shape.points[i + 1],
+                    (shape.points[i] + shape.points[i + 2]) / 2,
+                    (shape.points[i + 1] + shape.points[i + 3]) / 2
+                  );
+                }
+                // Add the last point
+                if (shape.points.length >= 2) {
+                  extraPoints.push(
+                    shape.points[shape.points.length - 2],
+                    shape.points[shape.points.length - 1]
+                  );
+                }
+                shape.points = extraPoints;
+              }
+
+              // Handle tool-specific properties
+              if (shape.tool === "Text" && shapeData.text) {
+                (shape as any).text = shapeData.text;
+              }
+            }
+
+            return shape;
+          })
+          .filter(Boolean);
+
+        if (newShapes.length > 0) {
+          const updatedShapes = [...shapes, ...newShapes];
+          setShapes(updatedShapes);
+          saveToHistory();
+
+          // Note: We don't need to manually broadcast to collaborators here anymore
+          // The API endpoint now handles broadcasting to all connected clients
+
+          // Clear the prompt
+          setAiPrompt("");
+        }
+      }
+    } catch (error) {
+      console.error("Error generating drawing with AI:", error);
+      setAiError(error instanceof Error ? error.message : "Unknown error");
+    } finally {
+      setIsAiGenerating(false);
+    }
+  }, [
+    aiPrompt,
+    isAiGenerating,
+    shapes,
+    setShapes,
+    saveToHistory,
+    isCollaborative,
+    selectedColor,
+    clear,
+    aiChatHistory,
+    setAiChatHistory,
+    userId,
+    roomId,
+  ]);
+
   return (
     <div className="canvas-container flex flex-col gap-4 ">
       <Toolbar
@@ -905,7 +1111,26 @@ const Canvas: React.FC<CanvasProps> = ({
         }
         onChangeSelectedShapeFill={handleSelectedShapeFillChange}
         defaultFillStyle={defaultFillStyle}
+        // AI drawing props
+        aiPrompt={aiPrompt}
+        setAiPrompt={setAiPrompt}
+        onGenerateWithAI={handleGenerateWithAI}
+        isAiGenerating={isAiGenerating}
       />
+
+      {/* Display AI error if any */}
+      {aiError && (
+        <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-2 rounded-lg mb-2 text-sm flex items-center">
+          <div className="mr-2 text-red-600">⚠️</div>
+          {aiError}
+          <button
+            className="ml-auto text-red-600 hover:text-red-800"
+            onClick={() => setAiError(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <div
         className="infinite-canvas-container relative overflow-hidden rounded-xl border border-gray-200 shadow-inner"

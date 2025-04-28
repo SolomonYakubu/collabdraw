@@ -97,31 +97,44 @@ export const useCanvasEventHandlers = ({
   }, []);
 
   /**
-   * Get canvas-relative coordinates from a mouse event
+   * Get canvas-relative coordinates from a mouse event, applying zoom and pan transformations
    */
   const getCanvasCoordinates = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } => {
       if (!canvasRef.current) return { x: 0, y: 0 };
 
-      const rect = canvasRef.current.getBoundingClientRect();
+      const canvas = canvasRef.current;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+
+      // Get position in CSS pixels relative to canvas
       const viewX = e.clientX - rect.left;
       const viewY = e.clientY - rect.top;
 
-      // Apply zoom and pan transformations if we're using infinite canvas
-      if (panOffset) {
-        return {
-          x: (viewX - panOffset.x) / zoom,
-          y: (viewY - panOffset.y) / zoom,
-        };
-      }
-
-      // Regular canvas coordinates
+      // Convert screen coordinates to world coordinates using the same transform sequence as RoughCanvas
+      const cx = canvas.width / (2 * dpr);
+      const cy = canvas.height / (2 * dpr);
+      
+      // Re-center
+      const centered_x = viewX - cx;
+      const centered_y = viewY - cy;
+      
+      // Remove pan (divide by zoom since panOffset is in screen coordinates)
+      const currentPanOffset = panOffset || { x: 0, y: 0 };
+      const unpanned_x = centered_x - (currentPanOffset.x / zoom);
+      const unpanned_y = centered_y - (currentPanOffset.y / zoom);
+      
+      // Remove zoom
+      const unzoomed_x = unpanned_x / zoom;
+      const unzoomed_y = unpanned_y / zoom;
+      
+      // Un-center to get final world coordinates
       return {
-        x: viewX,
-        y: viewY,
+        x: unzoomed_x + cx,
+        y: unzoomed_y + cy
       };
     },
-    [canvasRef, panOffset, zoom]
+    [canvasRef, zoom, panOffset]
   );
 
   /**
@@ -211,11 +224,26 @@ export const useCanvasEventHandlers = ({
           });
           break;
         case "Freehand":
-          // Add point to the freehand path
-          setCurrentShape({
-            ...currentShape,
-            points: [...currentShape.points, x, y],
-          });
+          // Add point to the freehand path with distance check to ensure smoother lines
+          // Don't add points that are too close to each other to avoid jagged edges
+          const lastX =
+            currentShape.points[currentShape.points.length - 2] || startPoint.x;
+          const lastY =
+            currentShape.points[currentShape.points.length - 1] || startPoint.y;
+
+          // Calculate distance from last point
+          const dx = x - lastX;
+          const dy = y - lastY;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          // Only add points if they're at least 2 pixels away from the last point
+          // This prevents too many points being added when drawing slowly
+          if (distance > 2 || currentShape.points.length < 4) {
+            setCurrentShape({
+              ...currentShape,
+              points: [...currentShape.points, x, y],
+            });
+          }
           break;
         default:
           break;
@@ -667,6 +695,38 @@ export const useCanvasEventHandlers = ({
             setIsDrawing(false);
             setStartPoint(null);
             return;
+          }
+        }
+
+        // Special handling for freehand drawings with too few points
+        if (currentShape.tool === "Freehand" && "points" in currentShape) {
+          // If we have fewer than 4 points (2 coordinates), it's likely just a click
+          if (currentShape.points.length < 4) {
+            // Cancel the drawing operation
+            setCurrentShape(null);
+            setIsDrawing(false);
+            setStartPoint(null);
+            return;
+          }
+
+          // If the path is very short with just a few points, duplicate some points to make it visible
+          if (currentShape.points.length < 10) {
+            // Duplicate each point to create a more substantial shape
+            const enhancedPoints: number[] = [];
+            for (let i = 0; i < currentShape.points.length; i += 2) {
+              const x = currentShape.points[i];
+              const y = currentShape.points[i + 1];
+              // Add the point multiple times with small offsets to create a dot
+              enhancedPoints.push(x, y);
+              enhancedPoints.push(x + 0.5, y + 0.5);
+              enhancedPoints.push(x - 0.5, y - 0.5);
+            }
+
+            // Update the current shape with enhanced points
+            setCurrentShape({
+              ...currentShape,
+              points: enhancedPoints,
+            });
           }
         }
 

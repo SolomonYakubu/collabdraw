@@ -147,30 +147,39 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
       isInfiniteCanvas,
     });
 
-    // Get canvas-relative coordinates from a mouse event, applying zoom and pan transformations
+    // Ensure correct pixel size for retina and match container size
+    useEffect(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      const { clientWidth, clientHeight } = canvas;
+      if (
+        canvas.width !== clientWidth * dpr ||
+        canvas.height !== clientHeight * dpr
+      ) {
+        canvas.width = clientWidth * dpr;
+        canvas.height = clientHeight * dpr;
+      }
+    }, [width, height]);
+
+    // Convert screen to world coords (inverse of context transform)
     const getCanvasCoordinates = useCallback(
-      (e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } => {
-        if (!canvasRef.current) return { x: 0, y: 0 };
-
-        const rect = canvasRef.current.getBoundingClientRect();
-        const viewX = e.clientX - rect.left;
-        const viewY = e.clientY - rect.top;
-
+      (e: React.MouseEvent<HTMLCanvasElement>) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return { x: 0, y: 0 };
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        const viewX = (e.clientX - rect.left) * dpr;
+        const viewY = (e.clientY - rect.top) * dpr;
         if (isInfiniteCanvas) {
-          // Transform window coordinates to canvas coordinates with zoom and pan
           return {
-            x: (viewX - panOffset.x) / zoom,
-            y: (viewY - panOffset.y) / zoom,
+            x: (viewX - dpr * panOffset.x) / (zoom * dpr),
+            y: (viewY - dpr * panOffset.y) / (zoom * dpr),
           };
         }
-
-        // Regular canvas coordinates
-        return {
-          x: viewX,
-          y: viewY,
-        };
+        return { x: viewX, y: viewY };
       },
-      [canvasRef, isInfiniteCanvas, zoom, panOffset]
+      [canvasRef, zoom, panOffset, isInfiniteCanvas]
     );
 
     // Update cursor style based on context
@@ -214,12 +223,9 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
         }
         // Check if hovering over a shape
         else if (selectedTool === "Select") {
+          // Use the already calculated world coordinates (mouseX, mouseY)
           for (const shape of shapes) {
-            // Convert mouse position to canvas coordinates if using infinite canvas
-            const coordX = isInfiniteCanvas ? mouseX : mouseX;
-            const coordY = isInfiniteCanvas ? mouseY : mouseY;
-
-            const { isInside } = isPointInShape(coordX, coordY, shape);
+            const { isInside } = isPointInShape(mouseX, mouseY, shape);
             if (isInside) {
               cursor = "move";
               break;
@@ -308,83 +314,86 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
     // Handle mouse down event
     const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
       e.preventDefault();
-
-      // Set mouse down state
       setIsMouseDown(true);
 
-      // Handle Pan tool
+      // Handle Pan tool first
       if (selectedTool === "Pan") {
         if (setIsPanning) setIsPanning(true);
-        lastPanPositionRef.current = {
-          x: e.clientX,
-          y: e.clientY,
-        };
+        lastPanPositionRef.current = { x: e.clientX, y: e.clientY };
         return;
       }
 
-      // Get mouse coordinates
+      // Get world coordinates
       const coords = getCanvasCoordinates(e);
 
-      // Check if this is a drag or resize operation
-      const wasHandled = interactionsMouseDown(coords.x, coords.y, selectedId);
-
-      if (wasHandled) {
-        // The operation was handled by the interactions hook
-        return;
-      }
-
-      // === SELECTION VS DRAWING LOGIC ===
-
-      // CASE 1: Using Select tool - always prioritize selection
+      // --- Revised Logic for Select Tool ---
       if (selectedTool === "Select") {
+        // 1. Check for resize handle on the currently selected shape
+        // Pass the *current* selectedId to check for resize handles
+        const resizeStarted = interactionsMouseDown(
+          coords.x,
+          coords.y,
+          selectedId
+        );
+        if (resizeStarted) {
+          return; // Resize handled by interactions hook
+        }
+
+        // 2. Check if clicking inside ANY shape to select and potentially drag
+        let clickedShape: Shape | null = null;
         for (let i = shapes.length - 1; i >= 0; i--) {
           const shape = shapes[i];
           const { isInside } = isPointInShape(coords.x, coords.y, shape);
-
           if (isInside) {
-            // Select the shape without starting a drag operation
-            setSelectedId(shape.id);
-            return;
+            clickedShape = shape;
+            break;
           }
         }
 
-        // If nothing found, deselect
-        if (selectedId) {
-          setSelectedId(null);
+        if (clickedShape) {
+          // Select the clicked shape if it's not already selected
+          if (selectedId !== clickedShape.id) {
+            setSelectedId(clickedShape.id);
+          }
+          // Now, explicitly try to start the drag operation for the clicked shape
+          // Pass the clickedShape.id to interactionsMouseDown
+          interactionsMouseDown(coords.x, coords.y, clickedShape.id);
+          // The interactions hook will now set isDragging state if applicable
+          return;
+        } else {
+          // 3. Clicked on empty space - deselect
+          if (selectedId) {
+            setSelectedId(null);
+          }
+          // Do NOT call parentMouseDown for Select tool on empty space
+          return;
         }
+      }
+      // --- End Revised Logic for Select Tool ---
 
-        // Call parent handler since no shape was selected
-        parentMouseDown(e);
+      // --- Logic for Drawing Tools ---
+
+      // Check Alt key (force drawing)
+      const isAltKeyPressed = e.altKey;
+      if (isAltKeyPressed) {
+        parentMouseDown(e); // Pass to drawing handler
         return;
       }
 
-      // CASE 2: Using a drawing tool - implement selection vs. drawing logic
-
-      // Check if Alt key is pressed (force drawing mode)
-      const isAltKeyPressed = e.altKey;
+      // Check Shift key (force selection with drawing tool)
       const isShiftKeyPressed = e.shiftKey;
 
-      // If Alt key is pressed, always pass through to drawing handler
-      if (isAltKeyPressed) {
-        parentMouseDown(e);
-        return;
-      }
-
-      // Otherwise, check if we clicked on a shape
-      let clickedShape: Shape | null = null;
+      // Check if clicking on a shape with a drawing tool
+      let clickedShapeDrawingTool: Shape | null = null;
       let isNearEdge = false;
-
       for (let i = shapes.length - 1; i >= 0; i--) {
         const shape = shapes[i];
         const { isInside } = isPointInShape(coords.x, coords.y, shape);
-
         if (isInside) {
-          clickedShape = shape;
-
-          // Check if we're near the edge of the shape
+          clickedShapeDrawingTool = shape;
+          // Check if near edge (using logic similar to original code)
           const bounds = getShapeBoundingBox(shape);
-
-          // Calculate distances to edges
+          const edgeThreshold = 5; // pixels
           const distanceFromLeft = Math.abs(coords.x - bounds.x);
           const distanceFromRight = Math.abs(
             coords.x - (bounds.x + bounds.width)
@@ -393,42 +402,33 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
           const distanceFromBottom = Math.abs(
             coords.y - (bounds.y + bounds.height)
           );
-
-          // Consider near edge if within 5 pixels of any edge
-          const edgeThreshold = 5; // pixels
           isNearEdge =
             distanceFromLeft <= edgeThreshold ||
             distanceFromRight <= edgeThreshold ||
             distanceFromTop <= edgeThreshold ||
             distanceFromBottom <= edgeThreshold;
-
           break;
         }
       }
 
-      // Decision logic for handling the event:
-      if (clickedShape) {
-        // We clicked on a shape
-
-        // If shift is pressed with drawing tool, prioritize selection
+      if (clickedShapeDrawingTool) {
+        // Shift pressed? Select it.
         if (isShiftKeyPressed) {
-          setSelectedId(clickedShape.id);
+          setSelectedId(clickedShapeDrawingTool.id);
           return;
         }
-
-        // If near edge with drawing tool, prioritize drawing
+        // Near edge? Draw.
         if (isNearEdge) {
-          parentMouseDown(e);
+          parentMouseDown(e); // Pass to drawing handler
           return;
         }
-
-        // If in center of shape, prioritize selection
-        setSelectedId(clickedShape.id);
+        // In center? Select it.
+        setSelectedId(clickedShapeDrawingTool.id);
         return;
       }
 
-      // No shape clicked - pass through to drawing handler
-      parentMouseDown(e);
+      // No shape clicked with drawing tool? Draw.
+      parentMouseDown(e); // Pass to drawing handler
     };
 
     // Handle mouse move event
@@ -543,17 +543,12 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
     };
 
     return (
-      <div
-        className={`relative ${isInfiniteCanvas ? "w-full h-full" : ""}`}
-        style={isInfiniteCanvas ? {} : { width, height }}
-      >
+      <div className="absolute inset-0 w-full h-full overflow-hidden bg-[#f0f0f0]">
         <canvas
           width={width}
           height={height}
           ref={canvasRef}
-          className={`${
-            isInfiniteCanvas ? "absolute" : "border border-gray-300 bg-white"
-          } shadow-sm rounded-xl`}
+          className="absolute inset-0 w-full h-full bg-white shadow-sm rounded-xl"
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -567,22 +562,9 @@ const RoughCanvasComponent = forwardRef<HTMLCanvasElement, RoughCanvasProps>(
                   ? "grabbing"
                   : "grab"
                 : "crosshair",
-            touchAction: "none", // Prevents scrolling on mobile
-            position: isInfiniteCanvas ? "absolute" : "relative",
-            left: isInfiniteCanvas ? "50%" : 0,
-            top: isInfiniteCanvas ? "50%" : 0,
-            transform: isInfiniteCanvas
-              ? `translate(-50%, -50%) translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`
-              : "none",
-            transformOrigin: "center center",
-            backgroundColor: "white",
-            boxShadow: isInfiniteCanvas
-              ? "0 0 0 1px rgba(0,0,0,0.05), 0 4px 10px rgba(0,0,0,0.1)"
-              : "none",
+            touchAction: "none",
           }}
         />
-
-        {/* Render collaboration cursors with userId */}
         {Object.keys(cursors || {}).length > 0 && (
           <CollaborationCursors
             cursors={cursors}

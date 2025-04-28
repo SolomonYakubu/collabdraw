@@ -91,22 +91,25 @@ export const useCanvasRendering = ({
 
       if (!context) return;
 
-      // Clear canvas
+      // Always clear and reset transform
+      context.setTransform(1, 0, 0, 1, 0, 0);
       context.clearRect(0, 0, canvas.width, canvas.height);
 
       if (customHandlers?.onBeforeDraw) {
         customHandlers.onBeforeDraw();
       }
 
-      // Apply transformations for infinite canvas
+      // Apply devicePixelRatio, zoom, and pan in a single transform
       if (isInfiniteCanvas) {
-        context.save();
-
-        // First translate to account for panning
-        context.translate(panOffset.x, panOffset.y);
-
-        // Then apply zoom from the center
-        context.scale(zoom, zoom);
+        const dpr = window.devicePixelRatio || 1;
+        context.setTransform(
+          dpr * zoom,
+          0,
+          0,
+          dpr * zoom,
+          dpr * panOffset.x,
+          dpr * panOffset.y
+        );
       }
 
       const activeShapes = getActiveShapes();
