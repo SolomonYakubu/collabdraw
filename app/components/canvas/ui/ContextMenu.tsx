@@ -1,264 +1,129 @@
-import React, { useEffect, useState, useRef } from "react";
-import {
-  FiCopy,
-  FiTrash2,
-  FiClipboard,
-  FiZoomIn,
-  FiBold,
-  FiAlignCenter,
-  FiLayers,
-  FiDroplet,
-  FiArrowUp,
-  FiArrowDown,
-  FiChevronUp,
-  FiChevronDown,
-} from "react-icons/fi";
+"use client";
 
-interface ContextMenuProps {
-  x: number;
-  y: number;
-  onClose: () => void;
-  onDelete: () => void;
-  onDuplicate?: () => void;
-  onCopy?: () => void;
-  onPaste?: () => void;
-  onBringForward?: () => void;
-  onSendBackward?: () => void;
-  onBringToFront?: () => void;
-  onSendToBack?: () => void;
-  onGroupItems?: () => void;
-  onUngroupItems?: () => void;
-  onChangeFillColor?: () => void;
-  isShapeSelected: boolean;
-  isMultipleSelection: boolean;
+/**
+ * Canvas context menu.
+ *
+ * The previous version measured itself during render through a ref that was
+ * still null, so the off-screen adjustment never actually ran, and it installed
+ * a document-wide `contextmenu` preventDefault that outlived its usefulness.
+ */
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+
+export interface ContextMenuItem {
+  label: string;
+  shortcut?: string;
+  onSelect: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  /** Renders a divider above this item. */
+  separatorBefore?: boolean;
 }
 
-const ContextMenu: React.FC<ContextMenuProps> = ({
-  x,
-  y,
-  onClose,
-  onDelete,
-  onDuplicate,
-  onCopy,
-  onPaste,
-  onBringForward,
-  onSendBackward,
-  onBringToFront,
-  onSendToBack,
-  onGroupItems,
-  onUngroupItems,
-  onChangeFillColor,
-  isShapeSelected,
-  isMultipleSelection,
-}) => {
-  const [showLayerSubmenu, setShowLayerSubmenu] = useState(false);
+interface ContextMenuProps {
+  /** Position relative to the containing element. */
+  x: number;
+  y: number;
+  items: ContextMenuItem[];
+  onClose: () => void;
+}
+
+const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }) => {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ x, y });
 
-  // Check if menu would go off screen and adjust position
-  const adjustPosition = () => {
-    if (!menuRef.current) return { x, y };
-
-    const rect = menuRef.current.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-
-    let adjustedX = x;
-    let adjustedY = y;
-
-    if (x + rect.width > viewportWidth) {
-      adjustedX = viewportWidth - rect.width - 10;
+  // Measure after mount, then nudge back inside the viewport if needed.
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) {
+      return;
     }
 
-    if (y + rect.height > viewportHeight) {
-      adjustedY = viewportHeight - rect.height - 10;
-    }
+    const rect = menu.getBoundingClientRect();
+    const parent = menu.offsetParent?.getBoundingClientRect();
+    const maxX = (parent?.width ?? window.innerWidth) - rect.width - 8;
+    const maxY = (parent?.height ?? window.innerHeight) - rect.height - 8;
 
-    return { x: adjustedX, y: adjustedY };
-  };
-
-  const position = adjustPosition();
+    setPosition({
+      x: Math.max(8, Math.min(x, maxX)),
+      y: Math.max(8, Math.min(y, maxY)),
+    });
+  }, [x, y]);
 
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+    const onPointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
         onClose();
       }
     };
 
-    document.addEventListener("click", handleClickOutside);
-    document.addEventListener("contextmenu", handleClickOutside);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown);
+    // Scrolling or zooming the canvas should dismiss it too.
+    window.addEventListener("wheel", onClose, { passive: true });
 
     return () => {
-      document.removeEventListener("click", handleClickOutside);
-      document.removeEventListener("contextmenu", handleClickOutside);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("wheel", onClose);
     };
   }, [onClose]);
-
-  // Prevent default context menu
-  useEffect(() => {
-    const handleContextMenu = (e: MouseEvent) => {
-      e.preventDefault();
-    };
-
-    document.addEventListener("contextmenu", handleContextMenu);
-    return () => {
-      document.removeEventListener("contextmenu", handleContextMenu);
-    };
-  }, []);
-
-  const hasLayerOptions =
-    onBringForward || onSendBackward || onBringToFront || onSendToBack;
-
-  // Handle layer submenu clicks
-  const handleLayerAction = (action: () => void) => {
-    action();
-    setShowLayerSubmenu(false);
-  };
 
   return (
     <div
       ref={menuRef}
-      className="fixed bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50"
-      style={{
-        left: position.x,
-        top: position.y,
-        minWidth: "180px",
-      }}
-      onClick={(e) => e.stopPropagation()}
+      role="menu"
+      className="island absolute z-50 min-w-52 py-1"
+      style={{ left: position.x, top: position.y }}
     >
-      {isShapeSelected && (
-        <>
-          {onCopy && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-              onClick={onCopy}
-            >
-              <FiCopy size={14} />
-              Copy
-            </button>
-          )}
-          {onDuplicate && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-              onClick={onDuplicate}
-            >
-              <FiCopy size={14} />
-              Duplicate
-            </button>
+      {items.map((item, index) => (
+        <div key={`${item.label}-${index}`}>
+          {item.separatorBefore && index > 0 && (
+            <div className="divider my-1 h-px" />
           )}
           <button
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-            onClick={onDelete}
+            type="button"
+            role="menuitem"
+            disabled={item.disabled}
+            onClick={() => {
+              item.onSelect();
+              onClose();
+            }}
+            className="flex w-full items-center justify-between gap-6 px-3 py-1.5 text-left text-sm transition-colors"
+            style={{
+              color: item.disabled
+                ? "var(--text-faint)"
+                : item.danger
+                  ? "var(--danger)"
+                  : "var(--text)",
+              cursor: item.disabled ? "not-allowed" : undefined,
+              background: "transparent",
+            }}
+            onMouseEnter={(event) => {
+              if (!item.disabled) {
+                event.currentTarget.style.background = item.danger
+                  ? "var(--danger-bg)"
+                  : "var(--hover-bg)";
+              }
+            }}
+            onMouseLeave={(event) => {
+              event.currentTarget.style.background = "transparent";
+            }}
           >
-            <FiTrash2 size={14} />
-            Delete
+            {item.label}
+            {item.shortcut && (
+              <span className="text-xs" style={{ color: "var(--text-faint)" }}>
+                {item.shortcut}
+              </span>
+            )}
           </button>
-
-          {/* Layer management section */}
-          {hasLayerOptions && (
-            <div className="relative">
-              <button
-                className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center justify-between"
-                onClick={() => setShowLayerSubmenu(!showLayerSubmenu)}
-              >
-                <div className="flex items-center gap-2">
-                  <FiLayers size={14} />
-                  Layer
-                </div>
-                <FiChevronDown
-                  size={14}
-                  className={
-                    showLayerSubmenu
-                      ? "rotate-180 transition-transform"
-                      : "transition-transform"
-                  }
-                />
-              </button>
-
-              {showLayerSubmenu && (
-                <div className="absolute z-50 w-full">
-                  <div className="bg-white rounded-lg shadow-lg border border-gray-200 mt-1 py-1 w-48">
-                    {onBringToFront && (
-                      <button
-                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-                        onClick={() => handleLayerAction(onBringToFront)}
-                      >
-                        <FiArrowUp size={14} />
-                        Bring to Front
-                      </button>
-                    )}
-                    {onBringForward && (
-                      <button
-                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-                        onClick={() => handleLayerAction(onBringForward)}
-                      >
-                        <FiChevronUp size={14} />
-                        Bring Forward
-                      </button>
-                    )}
-                    {onSendBackward && (
-                      <button
-                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-                        onClick={() => handleLayerAction(onSendBackward)}
-                      >
-                        <FiChevronDown size={14} />
-                        Send Backward
-                      </button>
-                    )}
-                    {onSendToBack && (
-                      <button
-                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-                        onClick={() => handleLayerAction(onSendToBack)}
-                      >
-                        <FiArrowDown size={14} />
-                        Send to Back
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Group management */}
-          {isMultipleSelection && onGroupItems && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-              onClick={onGroupItems}
-            >
-              <FiAlignCenter size={14} />
-              Group
-            </button>
-          )}
-          {!isMultipleSelection && onUngroupItems && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-              onClick={onUngroupItems}
-            >
-              <FiBold size={14} />
-              Ungroup
-            </button>
-          )}
-          {onChangeFillColor && (
-            <button
-              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-              onClick={onChangeFillColor}
-            >
-              <FiDroplet size={14} />
-              Change Fill Color
-            </button>
-          )}
-        </>
-      )}
-      {onPaste && (
-        <button
-          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2"
-          onClick={onPaste}
-        >
-          <FiClipboard size={14} />
-          Paste
-        </button>
-      )}
+        </div>
+      ))}
     </div>
   );
 };

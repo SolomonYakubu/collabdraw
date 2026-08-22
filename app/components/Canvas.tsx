@@ -1,1281 +1,933 @@
 "use client";
 
 /**
- * Main Canvas component that integrates all drawing functionality
+ * The editor.
+ *
+ * This component wires the pieces together and owns only genuinely local UI
+ * state (active tool, selection, panels). Scene data lives in `useScene`,
+ * input in `usePointerInteraction`, drawing in the renderer — previously all
+ * three were tangled through 1,300 lines here and in `RoughCanvas`.
  */
-import { useCallback, useEffect, useRef, useState, useMemo } from "react";
-import { Shape, ShapeType } from "../types/shapes";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
 import {
-  canvasToDataURL,
-  isPointInShape,
-  generateShapeId,
-  createShape,
-} from "../services/canvas/drawingService";
-import RoughCanvas from "./canvas/RoughCanvas";
-import Toolbar from "./canvas/ui/Toolbar";
-import ContextMenu from "./canvas/ui/ContextMenu";
-import FillColorModal from "./canvas/ui/FillColorModal";
-import { useCanvasEventHandlers } from "../hooks/canvas/useCanvasEventHandlers";
-import { useHistory } from "../hooks/canvas/useHistory";
-import { useTextEditing } from "../hooks/canvas/useTextEditing";
+  DEFAULT_STYLE,
+  isLinearShape,
+  type ElementStyle,
+  type Point,
+  type Shape,
+  type ToolType,
+} from "../types/shapes";
+import {
+  duplicateElement,
+  getElementBounds,
+  mutateElement,
+  translateElement,
+} from "../services/canvas/elements";
+import {
+  MAX_BINDING_GAP_PX,
+  removeStaleBindings,
+  settleBindingsAfterMove,
+  updateBoundElements,
+} from "../services/canvas/bindings";
+import { getSelectionBounds } from "../services/canvas/transform";
+import {
+  getElementAtPoint,
+  HIT_THRESHOLD_PX,
+} from "../services/canvas/hitTest";
+import { exportSceneToDataURL } from "../services/canvas/renderer";
+import { unionBoxes } from "../utils/geometry";
+import { clientToWorld, screenToWorld } from "../utils/viewport";
+
+import { useScene, type SceneBroadcast } from "../hooks/canvas/useScene";
+import { useViewport } from "../hooks/canvas/useViewport";
+import { usePointerInteraction } from "../hooks/canvas/usePointerInteraction";
+import { useTextEditor } from "../hooks/canvas/useTextEditor";
+import { useKeyboardShortcuts } from "../hooks/canvas/useKeyboardShortcuts";
+import { useAIAssistant } from "../hooks/canvas/useAIAssistant";
+import { useTheme } from "../hooks/useTheme";
 import { useCollaborationContext } from "../context/CollaborationContext";
-import { FiUsers, FiZoomIn, FiZoomOut, FiMaximize2 } from "react-icons/fi";
-interface User {
-  id: string;
-  tag: string;
-  cursor?: { x: number; y: number };
-}
+
+import CanvasSurface from "./canvas/CanvasSurface";
+import TextEditorOverlay from "./canvas/TextEditorOverlay";
+import RemoteCursors from "./canvas/RemoteCursors";
+import Toolbar from "./canvas/ui/Toolbar";
+import StylePanel from "./canvas/ui/StylePanel";
+import ContextMenu, { type ContextMenuItem } from "./canvas/ui/ContextMenu";
+import AIAgentPanel from "./canvas/AIAgentPanel";
+import ZoomControls from "./canvas/ui/ZoomControls";
+
 interface CanvasProps {
-  width?: number;
-  height?: number;
-  initialTool?: ShapeType;
-  initialColor?: string;
+  initialTool?: ToolType;
   isCollaborative?: boolean;
-  canvasRef?: React.RefObject<HTMLDivElement>;
 }
+
+/** Tools whose elements can take a background fill. */
+const FILLABLE_TOOLS = new Set<ToolType>([
+  "Square",
+  "Circle",
+  "Diamond",
+  "Triangle",
+]);
+
+/** Tools whose elements have an arrow shape. */
+const LINEAR_TOOLS = new Set<ToolType>(["Line", "Arrow"]);
 
 const Canvas: React.FC<CanvasProps> = ({
-  width = 800,
-  height = 600,
-  initialTool = "Freehand",
-  initialColor = "#000000",
+  initialTool = "Select",
   isCollaborative = true,
 }) => {
-  // References
-  const canvasRef = useRef<HTMLCanvasElement>(null!);
-  const canvasContainerRef = useRef<HTMLDivElement>(null!);
-  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const textInputRef = useRef<HTMLInputElement | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const interactiveCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const spacePressedRef = useRef(false);
+  const clipboardRef = useRef<Shape[]>([]);
 
-  // Reference to prevent infinite loops with isDragging state
-  const isDraggingRef = useRef(false);
+  const [tool, setTool] = useState<ToolType>(initialTool);
+  /*
+   * The chosen tool stays chosen until another is picked. Excalidraw's default is
+   * to snap back to selection after each shape, which is a surprise when you are
+   * drawing several of the same thing; the lock can still be turned off with Q.
+   */
+  const [toolLocked, setToolLocked] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [style, setStyle] = useState<ElementStyle>(DEFAULT_STYLE);
+  const [showUsers, setShowUsers] = useState(false);
+  const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<Point | null>(null);
 
-  // References for panning and zooming
-  const isPanningRef = useRef(false);
-  const lastPanPointRef = useRef({ x: 0, y: 0 });
+  const { preference: themePreference, theme, cycle: cycleTheme } = useTheme();
 
-  // Use collaboration context
+  // Dark mode inverts the element layer rather than re-rendering it; the text
+  // editor overlay has to match, or text would jump colour when editing starts.
+  const canvasFilter =
+    theme === "dark" ? "invert(93%) hue-rotate(180deg)" : "none";
+
+  const collaboration = useCollaborationContext();
   const {
     isConnected,
     users,
-    inProgressShapes,
-    shareableLink,
-    showLinkCopied,
+    cursors,
+    remoteInProgress,
+    linkCopied,
     copyShareableLink,
-    sendCanvasData,
-    sendShapeUpdate,
-    sendShapeDeletion,
-    sendShapeInProgress,
-    sendDrawingState,
+    sendCursor,
+    sendScene,
+    sendElements,
+    sendDeletions,
+    sendPendingElement,
+    setEventHandlers,
     userId,
     roomId,
-    shapes,
-    setShapes,
-  } = useCollaborationContext();
-
-  // Canvas state
-  const [currentShape, setCurrentShape] = useState<Shape | null>(null);
-  const [selectedId, setSelectedId] = useState<string | number | null>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [startPoint, setStartPoint] = useState<{ x: number; y: number } | null>(
-    null
-  );
-  const [selectedTool, setSelectedTool] = useState<ShapeType>(initialTool);
-  const [selectedColor, setSelectedColor] = useState<string>(initialColor);
-  const [selectedFillColor, setSelectedFillColor] =
-    useState<string>("transparent");
-  const [showUserPanel, setShowUserPanel] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const [editingText, setEditingText] = useState<{
-    id: string | number;
-    value: string;
-    x: number;
-    y: number;
-  } | null>(null);
-
-  // State for fill color modal
-  const [fillColorModal, setFillColorModal] = useState<{
-    visible: boolean;
-    initialColor: string;
-  }>({
-    visible: false,
-    initialColor: "transparent",
-  });
-
-  // Infinite canvas state
-  const [zoom, setZoom] = useState(1);
-  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-
-  // Context menu state
-  const [contextMenu, setContextMenu] = useState<{
-    visible: boolean;
-    x: number;
-    y: number;
-  }>({
-    visible: false,
-    x: 0,
-    y: 0,
-  });
-
-  // State to track the default fill style for new shapes
-  const [defaultFillStyle, setDefaultFillStyle] = useState<string>("hachure");
-
-  // AI drawing state
-  const [aiPrompt, setAiPrompt] = useState<string>("");
-  const [isAiGenerating, setIsAiGenerating] = useState<boolean>(false);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [aiChatHistory, setAiChatHistory] = useState<
-    Array<{ role: string; parts: Array<{ text: string }> }>
-  >([]);
-
-  // Update the ref when isDragging changes
-  useEffect(() => {
-    isDraggingRef.current = isDragging;
-  }, [isDragging]);
-
-  // Update panning ref
-  useEffect(() => {
-    isPanningRef.current = isPanning;
-  }, [isPanning]);
-
-  // Share in-progress shape with collaborators when drawing
-  useEffect(() => {
-    if (isCollaborative && isConnected && currentShape && isDrawing) {
-      sendShapeInProgress(currentShape);
-    }
-  }, [
-    currentShape,
-    isConnected,
-    isCollaborative,
-    sendShapeInProgress,
-    isDrawing,
-  ]);
-
-  // Notify about drawing state changes
-  useEffect(() => {
-    if (isCollaborative && isConnected) {
-      sendDrawingState(isDrawing);
-
-      // If we stopped drawing, wait a bit and sync our completed shapes
-      if (!isDrawing && shapes.length > 0) {
-        // Clear any existing timeout
-        if (syncTimeoutRef.current) {
-          clearTimeout(syncTimeoutRef.current);
-        }
-
-        // Set a new timeout to sync shapes
-        syncTimeoutRef.current = setTimeout(() => {
-          console.log("Syncing shapes after drawing:", shapes.length);
-          sendCanvasData(shapes);
-          syncTimeoutRef.current = null;
-        }, 500);
-      }
-    }
-  }, [
-    isDrawing,
-    isConnected,
-    isCollaborative,
-    sendDrawingState,
-    shapes,
-    sendCanvasData,
-  ]);
-
-  // Set up history management
-  const { saveToHistory, undo, redo, clear, canUndo, canRedo } = useHistory({
-    canvasRef,
-    shapes,
-    setShapes,
-    selectedId,
-    onShapeUpdated: isCollaborative ? sendShapeUpdate : undefined,
-  });
-
-  // Set up text editing
-  const { editingId, startTextEditing, endTextEditing } = useTextEditing({
-    shapes,
-    setShapes,
-    selectedId,
-    saveToHistory,
-    onShapeUpdated: isCollaborative ? sendShapeUpdate : undefined,
-    canvasRef: canvasContainerRef,
-  });
-
-  // Set up event handlers
-  const eventHandlers = useCanvasEventHandlers({
-    canvasRef,
-    selectedTool,
-    color: selectedColor,
-    fillColor: selectedFillColor,
-    isDrawing,
-    setIsDrawing,
-    startPoint,
-    setStartPoint,
-    currentShape,
-    setCurrentShape,
-    shapes,
-    setShapes,
-    selectedId,
-    setSelectedId,
-    saveToHistory,
-    onShapeUpdated: isCollaborative ? sendShapeUpdate : undefined,
-    isDragging,
-    setIsDragging: (newIsDragging) => {
-      // Only update the state if it's actually changed to prevent infinite loops
-      if (isDraggingRef.current !== newIsDragging) {
-        setIsDragging(newIsDragging);
-      }
-    },
-    startTextEditing,
-    // For infinite canvas
-    isPanning,
-    setIsPanning,
-    panOffset,
-    setPanOffset,
-    lastPanPointRef,
-    zoom,
-  });
-
-  // Compute all shapes to be rendered (regular + in-progress)
-  const allShapes = useMemo(() => {
-    // Start with all completed shapes
-    const displayShapes = [...shapes];
-
-    // Add in-progress shapes from other users
-    Object.values(inProgressShapes).forEach((shape) => {
-      if (shape && shape.id) {
-        // Check if this shape is already in our shapes array
-        const existingIndex = displayShapes.findIndex((s) => s.id === shape.id);
-        if (existingIndex === -1) {
-          displayShapes.push(shape);
-        }
-      }
-    });
-
-    return displayShapes;
-  }, [shapes, inProgressShapes]);
-
-  // Handle zoom in operation
-  const handleZoomIn = useCallback(() => {
-    setZoom((prevZoom) => Math.min(prevZoom * 1.2, 5)); // Limit max zoom to 5x
-  }, []);
-
-  // Handle zoom out operation
-  const handleZoomOut = useCallback(() => {
-    setZoom((prevZoom) => Math.max(prevZoom / 1.2, 0.2)); // Limit min zoom to 0.2x
-  }, []);
-
-  // Reset zoom and pan to default
-  const handleResetView = useCallback(() => {
-    setZoom(1);
-    setPanOffset({ x: 0, y: 0 });
-  }, []);
-
-  // Handle wheel zoom
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-        setZoom((prevZoom) => {
-          const newZoom = prevZoom * zoomFactor;
-          return Math.max(0.2, Math.min(5, newZoom)); // Constrain zoom between 0.2 and 5
-        });
-      } else if (selectedTool === "Pan" || e.shiftKey) {
-        // Pan with shift+scroll or when Pan tool is active
-        e.preventDefault();
-        setPanOffset((prev) => ({
-          x: prev.x - e.deltaX,
-          y: prev.y - e.deltaY,
-        }));
-      }
-    },
-    [selectedTool]
-  );
-
-  // Update the handleToolSelect function to properly clear states when switching tools
-  const handleToolSelect = useCallback(
-    (tool: ShapeType) => {
-      // End text editing when switching tools
-      if (editingId) {
-        endTextEditing();
-      }
-
-      // Always deselect shapes when switching to any drawing tool
-      if (tool !== "Select" && selectedId) {
-        setSelectedId(null);
-      }
-
-      // If we're switching from a drawing tool to Select tool, don't reset any in-progress drawing
-      // Otherwise, reset any drawing in progress
-      if (selectedTool !== "Select" && tool !== "Select" && isDrawing) {
-        setIsDrawing(false);
-        setCurrentShape(null);
-        setStartPoint(null);
-      }
-
-      setSelectedTool(tool);
-    },
-    [
-      selectedId,
-      editingId,
-      endTextEditing,
-      isDrawing,
-      selectedTool,
-      setIsDrawing,
-      setCurrentShape,
-      setStartPoint,
-    ]
-  );
-
-  // Fix handleStageDblClick to ensure text creation works on double-click
-  const handleStageDblClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      e.preventDefault(); // Prevent any default behavior
-      e.stopPropagation(); // Stop event propagation
-
-      // Get coordinates relative to canvas
-      const rect = canvasRef.current.getBoundingClientRect();
-      const x = (e.clientX - rect.left - panOffset.x) / zoom;
-      const y = (e.clientY - rect.top - panOffset.y) / zoom;
-
-      // If text shape is selected, edit it
-      if (selectedId) {
-        const selectedShape = shapes.find(
-          (shape) => shape.id === selectedId && shape.tool === "Text"
-        );
-        if (selectedShape) {
-          startTextEditing(selectedId);
-          return;
-        }
-      }
-
-      // Create text on double click regardless of selected tool
-      // This makes it work like Figma/Excalidraw where double-click always creates text
-      const textShape = eventHandlers.createTextShape(x, y);
-      if (textShape) {
-        // Deselect any previously selected shape
-        if (selectedId) {
-          setSelectedId(null);
-        }
-
-        const updatedShapes = [...shapes, textShape];
-        setShapes(updatedShapes);
-        setSelectedId(textShape.id);
-        saveToHistory();
-
-        // Start editing immediately
-        setTimeout(() => {
-          startTextEditing(textShape.id);
-        }, 0);
-
-        // Notify collaborators
-        if (isCollaborative && isConnected) {
-          sendShapeUpdate(textShape);
-        }
-      }
-    },
-    [
-      shapes,
-      selectedId,
-      eventHandlers,
-      startTextEditing,
-      setShapes,
-      saveToHistory,
-      isCollaborative,
-      isConnected,
-      sendShapeUpdate,
-      setSelectedId,
-      canvasRef,
-      panOffset,
-      zoom,
-    ]
-  );
-
-  // Handle right-click to show context menu
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent) => {
-      e.preventDefault();
-
-      // Get coordinates
-      const rect = canvasRef.current.getBoundingClientRect();
-      const x = e.clientX;
-      const y = e.clientY;
-
-      // Show context menu at mouse position
-      setContextMenu({
-        visible: true,
-        x,
-        y,
-      });
-    },
-    [canvasRef]
-  );
-
-  // Close context menu
-  const closeContextMenu = useCallback(() => {
-    setContextMenu({
-      ...contextMenu,
-      visible: false,
-    });
-  }, [contextMenu]);
-
-  // Handle duplicate shape action
-  const handleDuplicate = useCallback(() => {
-    if (!selectedId) return;
-
-    // Find the selected shape
-    const shapeToClone = shapes.find((shape) => shape.id === selectedId);
-    if (!shapeToClone) return;
-
-    // Create a new copy of the shape with a new ID
-    const clonedShape = {
-      ...shapeToClone,
-      id: `${shapeToClone.id}_copy_${Date.now()}`,
-      x: (shapeToClone.x || 0) + 20, // Offset slightly
-      y: (shapeToClone.y || 0) + 20,
-    };
-
-    // Add to shapes array
-    setShapes([...shapes, clonedShape]);
-
-    // Select the new shape
-    setSelectedId(clonedShape.id);
-
-    // Save to history
-    saveToHistory();
-
-    // Notify collaborators if needed
-    if (isCollaborative && isConnected && sendShapeUpdate) {
-      sendShapeUpdate(clonedShape);
-    }
-
-    // Close context menu
-    closeContextMenu();
-  }, [
-    selectedId,
-    shapes,
-    setShapes,
-    saveToHistory,
-    isCollaborative,
-    isConnected,
-    sendShapeUpdate,
-    closeContextMenu,
-    setSelectedId,
-  ]);
-
-  // Handle delete shape action
-  const handleDeleteShape = useCallback(() => {
-    if (!selectedId) return;
-
-    // Remove the selected shape
-    setShapes((prevShapes) =>
-      prevShapes.filter((shape) => shape.id !== selectedId)
-    );
-    setSelectedId(null);
-
-    // Save to history
-    saveToHistory();
-
-    // Notify collaborators if in collaborative mode
-    if (isCollaborative && isConnected && sendShapeDeletion) {
-      sendShapeDeletion([selectedId as string]);
-    }
-
-    // Close context menu
-    closeContextMenu();
-  }, [
-    selectedId,
-    setShapes,
-    saveToHistory,
-    isCollaborative,
-    isConnected,
-    sendShapeDeletion,
-    closeContextMenu,
-    setSelectedId,
-  ]);
-
-  // Handle changing fill color
-  const handleChangeFillColor = useCallback(() => {
-    if (!selectedId) return;
-
-    // Find the selected shape to get its current fill color
-    const selectedShape = shapes.find((shape) => shape.id === selectedId);
-    if (!selectedShape) return;
-
-    // Open the fill color modal with the current fill color
-    setFillColorModal({
-      visible: true,
-      initialColor: selectedShape.fill || "transparent",
-    });
-
-    // Close context menu
-    closeContextMenu();
-  }, [selectedId, shapes, closeContextMenu]);
-
-  // Handle fill color change
-  const handleFillColorChange = useCallback(
-    (color: string) => {
-      if (!selectedId) return;
-
-      // Update the shape's fill color and roughOptions for sketchy fill
-      setShapes((prevShapes) =>
-        prevShapes.map((shape) => {
-          if (shape.id === selectedId) {
-            // Enhanced sketchy fill options - increased roughness for more sketch-like appearance
-            const updatedShape = {
-              ...shape,
-              fill: color,
-              roughOptions: {
-                ...(shape.roughOptions || {}),
-                fillStyle:
-                  color !== "transparent" ? ("hachure" as const) : undefined,
-                roughness: 2.5,
-                fillWeight: 2 as any, // Cast to any to avoid type error
-                hachureAngle: Math.random() * 60 + 30, // Random angle between 30-90 degrees
-                hachureGap: 5, // Smaller gap for more visible hatching
-                disableMultiStroke: false, // Enable multiple strokes
-                disableMultiStrokeFill: false, // Enable multiple strokes for fill
-              },
-            };
-
-            // Notify collaborators if needed
-            if (isCollaborative && isConnected && sendShapeUpdate) {
-              sendShapeUpdate(updatedShape as Shape);
-            }
-
-            return updatedShape as Shape;
-          }
-          return shape;
-        })
-      );
-
-      // Save to history
-      saveToHistory();
-
-      // Close the modal
-      setFillColorModal({
-        visible: false,
-        initialColor: "transparent",
-      });
-    },
-    [
-      selectedId,
-      setShapes,
-      saveToHistory,
-      isCollaborative,
-      isConnected,
-      sendShapeUpdate,
-    ]
-  );
-
-  // Handle changing the fill color of a selected shape from the toolbar
-  const handleSelectedShapeFillChange = useCallback(
-    (color: string, customRoughOptions?: any) => {
-      if (!selectedId) return;
-
-      // Update the shape's fill color and roughOptions for sketchy fill
-      setShapes((prevShapes) =>
-        prevShapes.map((shape) => {
-          if (shape.id === selectedId) {
-            // Enhanced sketchy fill options with more randomized parameters for a hand-drawn look
-            const updatedShape = {
-              ...shape,
-              fill: color,
-              roughOptions: {
-                ...(shape.roughOptions || {}),
-                ...(customRoughOptions || {
-                  fillStyle: color !== "transparent" ? "hachure" : undefined,
-                  roughness: 2.5,
-                  fillWeight: 0.5,
-                  hachureAngle: Math.random() * 60 + 30,
-                  hachureGap: 5,
-                  disableMultiStroke: false,
-                  disableMultiStrokeFill: false,
-                }),
-              },
-            };
-
-            // Notify collaborators if needed
-            if (isCollaborative && isConnected && sendShapeUpdate) {
-              sendShapeUpdate(updatedShape);
-            }
-
-            return updatedShape;
-          }
-          return shape;
-        })
-      );
-
-      // Save to history
-      saveToHistory();
-    },
-    [
-      selectedId,
-      setShapes,
-      saveToHistory,
-      isCollaborative,
-      isConnected,
-      sendShapeUpdate,
-    ]
-  );
-
-  useEffect(() => {
-    // Start editing newly created text shapes automatically
-    if (selectedId) {
-      const selectedShape = shapes.find((s) => s.id === selectedId);
-      if (selectedShape?.tool === "Text" && !selectedShape.text) {
-        startTextEditing(selectedId);
-      }
-    }
-  }, [selectedId, shapes, startTextEditing]);
-
-  // Add keyboard shortcut event listeners
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Skip shortcuts when editing text
-      if (editingId !== null) return;
-
-      // Skip if we're in an input field
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
-      )
+  } = collaboration;
+
+  /* ------------------------------------------------------------------ *
+   * Scene
+   * ------------------------------------------------------------------ */
+
+  const handleSceneChange = useCallback(
+    ({ elements, changed, deletedIds, mode }: SceneBroadcast) => {
+      if (!isCollaborative) {
         return;
-
-      // Undo: Ctrl+Z or Cmd+Z
-      if (
-        (e.ctrlKey || e.metaKey) &&
-        e.key.toLowerCase() === "z" &&
-        !e.shiftKey
-      ) {
-        e.preventDefault();
-        undo();
       }
 
-      // Redo: Ctrl+Shift+Z or Cmd+Shift+Z or Ctrl+Y or Cmd+Y
-      if (
-        (e.ctrlKey || e.metaKey) &&
-        ((e.key.toLowerCase() === "z" && e.shiftKey) ||
-          e.key.toLowerCase() === "y")
-      ) {
-        e.preventDefault();
-        redo();
+      if (mode === "full") {
+        sendScene(elements);
+      } else if (changed.length > 0) {
+        sendElements(changed);
       }
 
-      // Delete: Delete or Backspace
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-        e.preventDefault();
-        // Remove the selected shape
-        setShapes((prevShapes) =>
-          prevShapes.filter((shape) => shape.id !== selectedId)
-        );
-        setSelectedId(null);
-
-        // Save to history
-        saveToHistory();
-
-        // Notify collaborators if in collaborative mode
-        if (isCollaborative && isConnected && sendShapeDeletion) {
-          sendShapeDeletion([selectedId as string]);
-        }
+      if (deletedIds.length > 0) {
+        sendDeletions(deletedIds);
       }
-    };
+    },
+    [isCollaborative, sendDeletions, sendElements, sendScene],
+  );
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [
+  const scene = useScene({ onChange: handleSceneChange });
+  const {
+    elements,
+    elementsRef,
+    applyElements,
     undo,
     redo,
-    selectedId,
-    setShapes,
-    saveToHistory,
-    editingId,
-    isCollaborative,
-    isConnected,
-    sendShapeDeletion,
-    setSelectedId,
-    shapes,
-  ]);
+    canUndo,
+    canRedo,
+    resetHistory,
+  } = scene;
 
-  // Generate share link
-  const handleGenerateLink = useCallback(() => {
-    copyShareableLink();
-  }, [copyShareableLink]);
+  const viewportApi = useViewport(containerRef);
+  const {
+    viewport,
+    viewportRef,
+    setViewport,
+    size,
+    devicePixelRatio,
+    zoomIn,
+    zoomOut,
+    resetZoom,
+    zoomToFit,
+  } = viewportApi;
 
-  // Toggle user panel
-  const toggleUserPanel = useCallback(() => {
-    setShowUserPanel((prev) => !prev);
-  }, []);
+  /* ------------------------------------------------------------------ *
+   * Collaboration wiring
+   * ------------------------------------------------------------------ */
 
-  // Save canvas as image
-  const saveToImage = useCallback(() => {
-    if (!canvasRef.current) return;
-
-    try {
-      const dataURL = canvasToDataURL(canvasRef.current);
-      if (!dataURL) return;
-
-      const link = document.createElement("a");
-      link.download = `collabdraw-${new Date().toISOString().slice(0, 10)}.png`;
-      link.href = dataURL;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    } catch (error) {
-      console.error("Error saving canvas as image:", error);
-      alert("Failed to save the canvas as an image.");
-    }
-  }, [canvasRef]);
-
-  // Cleanup function for when component unmounts
   useEffect(() => {
-    return () => {
-      if (syncTimeoutRef.current) {
-        clearTimeout(syncTimeoutRef.current);
-      }
-    };
-  }, []);
+    if (!isCollaborative) {
+      return;
+    }
 
-  // --- Layer ordering functions ---
-  // Bring shape forward one level
-  const handleBringForward = useCallback(() => {
-    if (!selectedId) return;
-
-    setShapes((prevShapes) => {
-      const index = prevShapes.findIndex((shape) => shape.id === selectedId);
-      if (index === -1 || index === prevShapes.length - 1) return prevShapes; // Can't bring forward if already at top
-
-      const newShapes = [...prevShapes];
-      const shapeToMove = newShapes[index];
-
-      // Remove the shape from its current position
-      newShapes.splice(index, 1);
-      // Add it one position up
-      newShapes.splice(index + 1, 0, shapeToMove);
-
-      // Notify collaborators if needed
-      if (isCollaborative && isConnected) {
-        // We need to update with the full new shapes array for proper ordering
-        sendCanvasData(newShapes);
-      }
-
-      return newShapes;
+    setEventHandlers({
+      // A full scene sync (joining a room, or a peer's undo/clear) becomes the
+      // new history baseline. Resetting it here rather than from an effect that
+      // watched `elements` matters: that effect also fired on the very first
+      // shape the user drew locally, which discarded the empty state and made
+      // that first shape impossible to undo.
+      onScene: (incoming) => resetHistory(removeStaleBindings(incoming)),
+      onElements: (incoming) => {
+        // Remote edits are authoritative for the elements they mention and are
+        // never pushed back onto the wire, which is what caused the previous
+        // update storms.
+        applyElements(
+          (previous) => {
+            const byId = new Map(previous.map((element) => [element.id, element]));
+            for (const element of incoming) {
+              byId.set(element.id, element);
+            }
+            return [...byId.values()];
+          },
+          { commit: false, broadcast: "none" },
+        );
+      },
+      onDeletions: (ids) => {
+        const removing = new Set(ids);
+        applyElements(
+          (previous) =>
+            removeStaleBindings(
+              previous.filter((element) => !removing.has(element.id)),
+            ),
+          { commit: false, broadcast: "none" },
+        );
+        setSelectedIds((current) => current.filter((id) => !removing.has(id)));
+      },
+      getScene: () => elementsRef.current,
     });
+  }, [applyElements, elementsRef, isCollaborative, resetHistory, setEventHandlers]);
 
-    saveToHistory();
-    closeContextMenu();
-  }, [
-    selectedId,
-    setShapes,
-    saveToHistory,
-    closeContextMenu,
-    isCollaborative,
-    isConnected,
-    sendShapeUpdate,
-    sendCanvasData,
-  ]);
+  /* ------------------------------------------------------------------ *
+   * Derived state
+   * ------------------------------------------------------------------ */
 
-  // Send shape backward one level
-  const handleSendBackward = useCallback(() => {
-    if (!selectedId) return;
+  const selectedElements = useMemo(() => {
+    if (selectedIds.length === 0) {
+      return [];
+    }
+    const wanted = new Set(selectedIds);
+    return elements.filter((element) => wanted.has(element.id));
+  }, [elements, selectedIds]);
 
-    setShapes((prevShapes) => {
-      const index = prevShapes.findIndex((shape) => shape.id === selectedId);
-      if (index <= 0) return prevShapes; // Can't send backward if already at bottom
+  const selectionBounds = useMemo(
+    () => getSelectionBounds(selectedElements),
+    [selectedElements],
+  );
 
-      const newShapes = [...prevShapes];
-      const shapeToMove = newShapes[index];
+  /* Prune ids that no longer exist (deleted locally or by a collaborator). */
+  useEffect(() => {
+    setSelectedIds((current) => {
+      if (current.length === 0) {
+        return current;
+      }
+      const live = new Set(elements.map((element) => element.id));
+      const next = current.filter((id) => live.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [elements]);
 
-      // Remove the shape from its current position
-      newShapes.splice(index, 1);
-      // Add it one position down
-      newShapes.splice(index - 1, 0, shapeToMove);
+  const textEditor = useTextEditor({
+    elementsRef,
+    applyElements,
+    style,
+    setSelectedIds,
+  });
 
-      // Notify collaborators if needed
-      if (isCollaborative && isConnected) {
-        // We need to update with the full new shapes array for proper ordering
-        sendCanvasData(newShapes);
+  const interaction = usePointerInteraction({
+    canvasRef: interactiveCanvasRef,
+    elementsRef,
+    applyElements,
+    viewportRef,
+    setViewport,
+    tool,
+    setTool,
+    toolLocked,
+    style,
+    selectedIds,
+    setSelectedIds,
+    spacePressedRef,
+    onEditText: textEditor.startEditing,
+    onCreateText: textEditor.createAndEdit,
+    onPendingElementChange: isCollaborative ? sendPendingElement : undefined,
+  });
+
+  /** Elements to paint: the scene, remote work in progress, minus the element
+   *  currently open in the text editor (the textarea shows that one). */
+  const renderedElements = useMemo(() => {
+    const editingId = textEditor.editingId;
+    const base = editingId
+      ? elements.filter((element) => element.id !== editingId)
+      : elements;
+
+    const remote = Object.values(remoteInProgress).filter(
+      (element) => !base.some((existing) => existing.id === element.id),
+    );
+
+    return remote.length > 0 ? [...base, ...remote] : base;
+  }, [elements, remoteInProgress, textEditor.editingId]);
+
+  const bindingHighlightElement = useMemo(() => {
+    const id = interaction.visuals.bindingHighlightId;
+    return id ? elements.find((element) => element.id === id) ?? null : null;
+  }, [elements, interaction.visuals.bindingHighlightId]);
+
+  /* ------------------------------------------------------------------ *
+   * Commands
+   * ------------------------------------------------------------------ */
+
+  const deleteSelection = useCallback(() => {
+    if (selectedIds.length === 0) {
+      return;
+    }
+
+    const removing = new Set(selectedIds);
+    // Deleting a container removes the label bound to it as well.
+    for (const element of elementsRef.current) {
+      if (!removing.has(element.id)) {
+        continue;
+      }
+      for (const bound of element.boundElements ?? []) {
+        if (bound.type === "text") {
+          removing.add(bound.id);
+        }
+      }
+    }
+
+    applyElements(
+      (previous) => previous.filter((element) => !removing.has(element.id)),
+      { deletedIds: [...removing] },
+    );
+    setSelectedIds([]);
+  }, [applyElements, elementsRef, selectedIds]);
+
+  const duplicateSelection = useCallback(() => {
+    if (selectedIds.length === 0) {
+      return;
+    }
+
+    const wanted = new Set(selectedIds);
+    const copies = elementsRef.current
+      .filter((element) => wanted.has(element.id))
+      .map((element) => duplicateElement(element));
+
+    if (copies.length === 0) {
+      return;
+    }
+
+    applyElements((previous) => [...previous, ...copies], {
+      changedIds: copies.map((element) => element.id),
+    });
+    setSelectedIds(copies.map((element) => element.id));
+  }, [applyElements, elementsRef, selectedIds]);
+
+  const nudgeSelection = useCallback(
+    (dx: number, dy: number) => {
+      if (selectedIds.length === 0) {
+        return;
       }
 
-      return newShapes;
+      const moving = new Set(selectedIds);
+
+      applyElements(
+        (previous) =>
+          settleBindingsAfterMove(
+            previous.map((element) =>
+              moving.has(element.id)
+                ? translateElement(element, dx, dy)
+                : element,
+            ),
+            moving,
+            MAX_BINDING_GAP_PX / viewportRef.current.zoom,
+          ),
+        { changedIds: selectedIds },
+      );
+    },
+    [applyElements, selectedIds, viewportRef],
+  );
+
+  const selectAll = useCallback(() => {
+    setSelectedIds(elementsRef.current.map((element) => element.id));
+    setTool("Select");
+  }, [elementsRef]);
+
+  const copySelection = useCallback(() => {
+    const wanted = new Set(selectedIds);
+    clipboardRef.current = elementsRef.current
+      .filter((element) => wanted.has(element.id))
+      .map((element) => ({ ...element }));
+  }, [elementsRef, selectedIds]);
+
+  const cutSelection = useCallback(() => {
+    copySelection();
+    deleteSelection();
+  }, [copySelection, deleteSelection]);
+
+  const paste = useCallback(() => {
+    const copied = clipboardRef.current;
+    if (copied.length === 0) {
+      return;
+    }
+
+    const copies = copied.map((element) => duplicateElement(element, 20));
+    applyElements((previous) => [...previous, ...copies], {
+      changedIds: copies.map((element) => element.id),
     });
+    setSelectedIds(copies.map((element) => element.id));
+    setTool("Select");
+  }, [applyElements]);
 
-    saveToHistory();
-    closeContextMenu();
-  }, [
-    selectedId,
-    setShapes,
-    saveToHistory,
-    closeContextMenu,
-    isCollaborative,
-    isConnected,
-    sendShapeUpdate,
-    sendCanvasData,
-  ]);
-
-  // Bring shape to the very front
-  const handleBringToFront = useCallback(() => {
-    if (!selectedId) return;
-
-    setShapes((prevShapes) => {
-      const index = prevShapes.findIndex((shape) => shape.id === selectedId);
-      if (index === -1 || index === prevShapes.length - 1) return prevShapes; // Already at front
-
-      const newShapes = [...prevShapes];
-      const shapeToMove = newShapes.splice(index, 1)[0];
-      newShapes.push(shapeToMove); // Add to end (top of stack)
-
-      // Notify collaborators if needed
-      if (isCollaborative && isConnected) {
-        // We need to update with the full new shapes array for proper ordering
-        sendCanvasData(newShapes);
+  /** Reorder the selection within the element array, which is the z-order. */
+  const reorderSelection = useCallback(
+    (mode: "front" | "back" | "forward" | "backward") => {
+      if (selectedIds.length === 0) {
+        return;
       }
 
-      return newShapes;
-    });
+      const wanted = new Set(selectedIds);
 
-    saveToHistory();
-    closeContextMenu();
-  }, [
-    selectedId,
-    setShapes,
-    saveToHistory,
-    closeContextMenu,
-    isCollaborative,
-    isConnected,
-    sendShapeUpdate,
-    sendCanvasData,
-  ]);
+      applyElements(
+        (previous) => {
+          const moving = previous.filter((element) => wanted.has(element.id));
+          const rest = previous.filter((element) => !wanted.has(element.id));
 
-  // Send shape to the very back
-  const handleSendToBack = useCallback(() => {
-    if (!selectedId) return;
+          if (mode === "front") {
+            return [...rest, ...moving];
+          }
+          if (mode === "back") {
+            return [...moving, ...rest];
+          }
 
-    setShapes((prevShapes) => {
-      const index = prevShapes.findIndex((shape) => shape.id === selectedId);
-      if (index <= 0) return prevShapes; // Already at back
+          // One step at a time, preserving relative order within the selection.
+          const next = [...previous];
+          const indices = next
+            .map((element, index) => ({ element, index }))
+            .filter(({ element }) => wanted.has(element.id))
+            .map(({ index }) => index);
 
-      const newShapes = [...prevShapes];
-      const shapeToMove = newShapes.splice(index, 1)[0];
-      newShapes.unshift(shapeToMove); // Add to beginning (bottom of stack)
+          if (mode === "forward") {
+            for (let i = indices.length - 1; i >= 0; i -= 1) {
+              const index = indices[i];
+              if (index < next.length - 1 && !wanted.has(next[index + 1].id)) {
+                [next[index], next[index + 1]] = [next[index + 1], next[index]];
+              }
+            }
+          } else {
+            for (let i = 0; i < indices.length; i += 1) {
+              const index = indices[i];
+              if (index > 0 && !wanted.has(next[index - 1].id)) {
+                [next[index], next[index - 1]] = [next[index - 1], next[index]];
+              }
+            }
+          }
 
-      // Notify collaborators if needed
-      if (isCollaborative && isConnected) {
-        // We need to update with the full new shapes array for proper ordering
-        sendCanvasData(newShapes);
-      }
-
-      return newShapes;
-    });
-
-    saveToHistory();
-    closeContextMenu();
-  }, [
-    selectedId,
-    setShapes,
-    saveToHistory,
-    closeContextMenu,
-    isCollaborative,
-    isConnected,
-    sendShapeUpdate,
-    sendCanvasData,
-  ]);
-
-  // Handle AI drawing generation
-  const handleGenerateWithAI = useCallback(async () => {
-    if (!aiPrompt.trim() || isAiGenerating) return;
-
-    setIsAiGenerating(true);
-    setAiError(null);
-
-    try {
-      // Add the current user prompt to chat history
-      const userPrompt = {
-        role: "user",
-        parts: [{ text: aiPrompt }],
-      };
-
-      // Updated history with the new user prompt
-      const updatedHistory = [...aiChatHistory, userPrompt];
-
-      // Serialize the current canvas state to include with the prompt
-      const currentCanvasState = shapes.map((shape) => {
-        // Create a simplified version of each shape with essential properties
-        const simplifiedShape = {
-          tool: shape.tool,
-          id: shape.id,
-          x: shape.x,
-          y: shape.y,
-          stroke: shape.stroke,
-          fill: shape.fill || "transparent",
-        };
-
-        // Add specific properties based on the shape type
-        if ("width" in shape && "height" in shape) {
-          Object.assign(simplifiedShape, {
-            width: shape.width,
-            height: shape.height,
-          });
-        }
-
-        if ("x1" in shape && "y1" in shape && "x2" in shape && "y2" in shape) {
-          Object.assign(simplifiedShape, {
-            x1: shape.x1,
-            y1: shape.y1,
-            x2: shape.x2,
-            y2: shape.y2,
-          });
-        }
-
-        if ("points" in shape && Array.isArray(shape.points)) {
-          Object.assign(simplifiedShape, {
-            points: shape.points.slice(0, 20), // Limit points to avoid huge payloads
-          });
-        }
-
-        if (shape.tool === "Text" && "text" in shape) {
-          Object.assign(simplifiedShape, { text: shape.text });
-        }
-
-        return simplifiedShape;
-      });
-
-      const response = await fetch("/api/generate-drawing", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
+          return next;
         },
-        body: JSON.stringify({
-          prompt: aiPrompt,
-          currentState: currentCanvasState,
-          history: updatedHistory,
-          // Add collaboration information for broadcasting
-          userId: userId || nanoid(8),
-          roomId: isCollaborative ? roomId : null,
-        }),
-      });
+        // Ordering is positional, so peers need the whole array.
+        { broadcast: "full" },
+      );
+    },
+    [applyElements, selectedIds],
+  );
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to generate drawing");
+  const clearCanvas = useCallback(() => {
+    if (elementsRef.current.length === 0) {
+      return;
+    }
+    applyElements(() => [], { broadcast: "full" });
+    setSelectedIds([]);
+  }, [applyElements, elementsRef]);
+
+  const exportPNG = useCallback(() => {
+    const dataURL = exportSceneToDataURL(elementsRef.current);
+
+    if (!dataURL) {
+      return;
+    }
+
+    const link = document.createElement("a");
+    link.download = `collabdraw-${new Date().toISOString().slice(0, 10)}.png`;
+    link.href = dataURL;
+    link.click();
+  }, [elementsRef]);
+
+  /** Apply a style change to the selection, and remember it for new elements. */
+  const handleStyleChange = useCallback(
+    (patch: Partial<ElementStyle>) => {
+      setStyle((current) => ({ ...current, ...patch }));
+
+      if (selectedIds.length === 0) {
+        return;
       }
 
-      const data = await response.json();
+      const wanted = new Set(selectedIds);
+      const { fontSize, fontFamily, ...elementPatch } = patch;
 
-      if (data.shapes && Array.isArray(data.shapes)) {
-        // Add the assistant's response to chat history
-        const assistantResponse = {
-          role: "model",
-          parts: [{ text: JSON.stringify(data.shapes) }],
-        };
+      applyElements(
+        (previous) => {
+          const restyled = previous.map((element) => {
+            if (!wanted.has(element.id)) {
+              return element;
+            }
 
-        // Update chat history state with both the prompt and response
-        setAiChatHistory([...updatedHistory, assistantResponse]);
+            const updates: Partial<Shape> = { ...elementPatch };
 
-        // Check if there's a special ClearCanvas shape, which indicates we should clear the canvas first
-        const shouldClearCanvas = data.shapes.some(
-          (shapeData: any) => shapeData.tool === "ClearCanvas"
-        );
+            // A fill on text or a line would never be visible; skip it.
+            if (
+              (element.tool === "Text" ||
+                element.tool === "Freehand" ||
+                isLinearShape(element)) &&
+              "fill" in updates
+            ) {
+              delete updates.fill;
+            }
 
-        // If requested to clear canvas, do it before adding new shapes
-        if (shouldClearCanvas) {
-          clear();
-        }
-
-        // Filter out any ClearCanvas shapes (they're just signals, not actual shapes to draw)
-        const shapesToProcess = data.shapes.filter(
-          (shapeData: any) => shapeData.tool !== "ClearCanvas"
-        );
-
-        // Process AI-generated shapes
-        const newShapes = shapesToProcess
-          .map((shapeData: any) => {
-            // Use the ID generated in the API if available, otherwise create a new ID
-            const id = shapeData.id || `ai_${nanoid(10)}`;
-
-            // Create a valid shape with proper ID
-            const shape = createShape(
-              shapeData.tool,
-              {
-                ...shapeData,
-                id,
-              },
-              shapeData.stroke || selectedColor
-            );
-
-            // Ensure shape is valid
-            if (shape) {
-              // Apply fill and any custom options if provided
-              if (shapeData.fill) {
-                shape.fill = shapeData.fill;
+            if (element.tool === "Text") {
+              if (fontSize !== undefined) {
+                Object.assign(updates, { fontSize });
               }
-
-              // For freehand tool, ensure we have enough points for smooth curves
-              if (shape.tool === "Freehand" && shape.points.length < 6) {
-                // For very short point arrays, duplicate some points to ensure
-                // the curve is rendered properly
-                const extraPoints = [];
-                for (let i = 0; i < shape.points.length - 2; i += 2) {
-                  extraPoints.push(
-                    shape.points[i],
-                    shape.points[i + 1],
-                    (shape.points[i] + shape.points[i + 2]) / 2,
-                    (shape.points[i + 1] + shape.points[i + 3]) / 2
-                  );
-                }
-                // Add the last point
-                if (shape.points.length >= 2) {
-                  extraPoints.push(
-                    shape.points[shape.points.length - 2],
-                    shape.points[shape.points.length - 1]
-                  );
-                }
-                shape.points = extraPoints;
-              }
-
-              // Handle tool-specific properties
-              if (shape.tool === "Text" && shapeData.text) {
-                (shape as any).text = shapeData.text;
+              if (fontFamily !== undefined) {
+                Object.assign(updates, { fontFamily });
               }
             }
 
-            return shape;
-          })
-          .filter(Boolean);
+            return mutateElement(element, updates);
+          });
 
-        if (newShapes.length > 0) {
-          const updatedShapes = [...shapes, ...newShapes];
-          setShapes(updatedShapes);
-          saveToHistory();
+          // Changing the arrow shape changes the path, so the affected
+          // connectors need re-resolving against their bindings.
+          return patch.edgeStyle
+            ? updateBoundElements(restyled, wanted)
+            : restyled;
+        },
+        { changedIds: selectedIds },
+      );
+    },
+    [applyElements, selectedIds],
+  );
 
-          // Note: We don't need to manually broadcast to collaborators here anymore
-          // The API endpoint now handles broadcasting to all connected clients
+  const handleToolChange = useCallback(
+    (next: ToolType) => {
+      textEditor.stopEditing();
+      interaction.cancel();
 
-          // Clear the prompt
-          setAiPrompt("");
+      if (next !== "Select") {
+        setSelectedIds([]);
+      }
+
+      setTool(next);
+    },
+    [interaction, textEditor],
+  );
+
+  const handleEscape = useCallback(() => {
+    if (textEditor.editingId) {
+      textEditor.stopEditing();
+      return;
+    }
+
+    interaction.cancel();
+
+    if (selectedIds.length > 0) {
+      setSelectedIds([]);
+      return;
+    }
+
+    if (tool !== "Select") {
+      setTool("Select");
+    }
+  }, [interaction, selectedIds.length, textEditor, tool]);
+
+  const sceneBounds = useMemo(
+    () => unionBoxes(elements.map(getElementBounds)),
+    [elements],
+  );
+
+  useKeyboardShortcuts(
+    {
+      setTool: handleToolChange,
+      toggleToolLock: () => setToolLocked((locked) => !locked),
+      undo,
+      redo,
+      deleteSelection,
+      selectAll,
+      duplicateSelection,
+      nudgeSelection,
+      copySelection,
+      cutSelection,
+      paste,
+      bringForward: () => reorderSelection("forward"),
+      sendBackward: () => reorderSelection("backward"),
+      bringToFront: () => reorderSelection("front"),
+      sendToBack: () => reorderSelection("back"),
+      zoomIn,
+      zoomOut,
+      resetZoom,
+      zoomToFit: () =>
+        zoomToFit(
+          selectionBounds ?? sceneBounds,
+        ),
+      escape: handleEscape,
+      isEditingText: () => textEditor.editingId !== null,
+    },
+    spacePressedRef,
+  );
+
+  /* ------------------------------------------------------------------ *
+   * Pointer plumbing
+   * ------------------------------------------------------------------ */
+
+  const handlePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLCanvasElement>) => {
+      interaction.handlers.onPointerMove(event);
+
+      if (isCollaborative) {
+        const canvas = interactiveCanvasRef.current;
+        if (canvas) {
+          // Cursors travel in world coordinates so they land on the same part
+          // of the drawing whatever each peer's zoom and scroll happen to be.
+          sendCursor(
+            clientToWorld(
+              event.clientX,
+              event.clientY,
+              canvas.getBoundingClientRect(),
+              viewportRef.current,
+            ),
+          );
         }
       }
-    } catch (error) {
-      console.error("Error generating drawing with AI:", error);
-      setAiError(error instanceof Error ? error.message : "Unknown error");
-    } finally {
-      setIsAiGenerating(false);
-    }
+    },
+    [interaction.handlers, isCollaborative, sendCursor, viewportRef],
+  );
+
+  const handleContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLCanvasElement>) => {
+      event.preventDefault();
+
+      const container = containerRef.current;
+      const canvas = interactiveCanvasRef.current;
+      if (!container || !canvas) {
+        return;
+      }
+
+      // Right-clicking an unselected element selects it first, so the menu's
+      // actions apply to what the user actually pointed at.
+      const world = clientToWorld(
+        event.clientX,
+        event.clientY,
+        canvas.getBoundingClientRect(),
+        viewportRef.current,
+      );
+      const hit = getElementAtPoint(
+        world,
+        elementsRef.current,
+        HIT_THRESHOLD_PX / viewportRef.current.zoom,
+      );
+
+      if (hit) {
+        setSelectedIds((current) =>
+          current.includes(hit.id) ? current : [hit.id],
+        );
+      } else {
+        setSelectedIds([]);
+      }
+
+      const rect = container.getBoundingClientRect();
+      setContextMenu({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+    },
+    [elementsRef, viewportRef],
+  );
+
+  const contextMenuItems = useMemo<ContextMenuItem[]>(() => {
+    const hasSelection = selectedIds.length > 0;
+
+    return [
+      {
+        label: "Select all",
+        shortcut: "Ctrl+A",
+        onSelect: selectAll,
+        disabled: elements.length === 0,
+      },
+      {
+        label: "Paste",
+        shortcut: "Ctrl+V",
+        onSelect: paste,
+        disabled: clipboardRef.current.length === 0,
+      },
+      {
+        label: "Copy",
+        shortcut: "Ctrl+C",
+        onSelect: copySelection,
+        disabled: !hasSelection,
+        separatorBefore: true,
+      },
+      {
+        label: "Duplicate",
+        shortcut: "Ctrl+D",
+        onSelect: duplicateSelection,
+        disabled: !hasSelection,
+      },
+      {
+        label: "Bring to front",
+        shortcut: "Ctrl+Shift+]",
+        onSelect: () => reorderSelection("front"),
+        disabled: !hasSelection,
+        separatorBefore: true,
+      },
+      {
+        label: "Send to back",
+        shortcut: "Ctrl+Shift+[",
+        onSelect: () => reorderSelection("back"),
+        disabled: !hasSelection,
+      },
+      {
+        label: "Delete",
+        shortcut: "Del",
+        onSelect: deleteSelection,
+        disabled: !hasSelection,
+        danger: true,
+        separatorBefore: true,
+      },
+    ];
   }, [
-    aiPrompt,
-    isAiGenerating,
-    shapes,
-    setShapes,
-    saveToHistory,
-    isCollaborative,
-    selectedColor,
-    clear,
-    aiChatHistory,
-    setAiChatHistory,
-    userId,
-    roomId,
+    copySelection,
+    deleteSelection,
+    duplicateSelection,
+    elements.length,
+    paste,
+    reorderSelection,
+    selectAll,
+    selectedIds.length,
   ]);
 
+  /* ------------------------------------------------------------------ *
+   * AI
+   * ------------------------------------------------------------------ */
+
+  const ai = useAIAssistant({
+    elementsRef,
+    applyElements,
+    style,
+    roomId,
+    getViewportCenter: () =>
+      screenToWorld(size.width / 2, size.height / 2, viewportRef.current),
+    // Bring a freshly generated diagram into view, and select it so it can be
+    // moved straight away.
+    onDiagramPlaced: (bounds) => {
+      zoomToFit(bounds);
+      setSelectedIds([]);
+    },
+  });
+
+  const openAIPanel = useCallback(() => {
+    setIsAIPanelOpen((open) => !open);
+  }, []);
+
+  /* ------------------------------------------------------------------ *
+   * Render
+   * ------------------------------------------------------------------ */
+
+  const showFillControls =
+    selectedElements.length > 0
+      ? selectedElements.some((element) => FILLABLE_TOOLS.has(element.tool))
+      : FILLABLE_TOOLS.has(tool);
+
+  const showEdgeStyleControls =
+    selectedElements.length > 0
+      ? selectedElements.some((element) => isLinearShape(element))
+      : LINEAR_TOOLS.has(tool);
+
+  const showStylePanel = selectedElements.length > 0 || tool !== "Select";
+
   return (
-    <div className="canvas-container flex flex-col gap-4 ">
-      <Toolbar
-        selectedTool={selectedTool}
-        onSelectTool={handleToolSelect}
-        selectedColor={selectedColor}
-        onSelectColor={setSelectedColor}
-        selectedFillColor={selectedFillColor}
-        onSelectFillColor={setSelectedFillColor}
-        onClearCanvas={clear}
-        onUndo={undo}
-        onRedo={redo}
-        canUndo={canUndo}
-        canRedo={canRedo}
-        onSave={saveToImage}
-        onGenerateLink={isCollaborative ? handleGenerateLink : undefined}
-        shareableLink={shareableLink}
-        showLinkCopied={showLinkCopied}
-        toggleUserPanel={isCollaborative ? toggleUserPanel : undefined}
-        hasSelectedShape={selectedId !== null}
-        selectedShapeFill={
-          selectedId
-            ? shapes.find((shape) => shape.id === selectedId)?.fill ||
-              "transparent"
-            : "transparent"
-        }
-        selectedShapeOptions={
-          selectedId
-            ? shapes.find((shape) => shape.id === selectedId)?.roughOptions
-            : undefined
-        }
-        onChangeSelectedShapeFill={handleSelectedShapeFillChange}
-        defaultFillStyle={defaultFillStyle}
-        // AI drawing props
-        aiPrompt={aiPrompt}
-        setAiPrompt={setAiPrompt}
-        onGenerateWithAI={handleGenerateWithAI}
-        isAiGenerating={isAiGenerating}
-      />
-
-      {/* Display AI error if any */}
-      {aiError && (
-        <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-2 rounded-lg mb-2 text-sm flex items-center">
-          <div className="mr-2 text-red-600">⚠️</div>
-          {aiError}
-          <button
-            className="ml-auto text-red-600 hover:text-red-800"
-            onClick={() => setAiError(null)}
-          >
-            ×
-          </button>
-        </div>
-      )}
-
-      <div
-        className="infinite-canvas-container relative overflow-hidden rounded-xl border border-gray-200 shadow-inner"
-        ref={canvasContainerRef}
-        onWheel={handleWheel}
-        onContextMenu={handleContextMenu}
-        style={{
-          width: "100%",
-          height: "calc(100vh - 140px)",
-          minHeight: "400px",
-        }}
-      >
-        <div className="absolute top-3 left-3 z-40 flex gap-2 bg-white/90 backdrop-blur-sm p-2 rounded-lg shadow-sm">
-          <button
-            className="p-2 rounded-md hover:bg-blue-50 hover:text-blue-600 text-gray-700 transition-colors"
-            onClick={handleZoomIn}
-            title="Zoom in"
-          >
-            <FiZoomIn size={18} />
-          </button>
-          <button
-            className="p-2 rounded-md hover:bg-blue-50 hover:text-blue-600 text-gray-700 transition-colors"
-            onClick={handleZoomOut}
-            title="Zoom out"
-          >
-            <FiZoomOut size={18} />
-          </button>
-          <button
-            className="p-2 rounded-md hover:bg-blue-50 hover:text-blue-600 text-gray-700 transition-colors"
-            onClick={handleResetView}
-            title="Reset view"
-          >
-            <FiMaximize2 size={18} />
-          </button>
-          <div className="flex items-center px-3 text-sm font-medium text-gray-700 min-w-16 justify-center">
-            {Math.round(zoom * 100)}%
-          </div>
-        </div>
-
-        <RoughCanvas
-          ref={canvasRef}
-          width={width}
-          height={height}
-          shapes={allShapes}
-          currentShape={currentShape}
-          selectedId={selectedId}
-          setSelectedId={setSelectedId}
-          onMouseDown={eventHandlers.handleMouseDown}
-          onMouseMove={eventHandlers.handleMouseMove}
-          onMouseUp={eventHandlers.handleMouseUp}
-          onDblClick={handleStageDblClick}
-          selectedTool={selectedTool}
-          enableDragWithoutSelect={true}
-          cursors={
-            isCollaborative
-              ? (users as User[]).reduce<
-                  Record<string, { x: number; y: number }>
-                >((acc, user) => {
-                  if (user && user.id && user.cursor) {
-                    acc[user.id] = user.cursor;
-                  }
-                  return acc;
-                }, {})
-              : {}
-          }
-          setIsDragging={setIsDragging}
-          userId={userId}
-          zoom={zoom}
-          panOffset={panOffset}
-          isPanning={isPanning}
-          setIsPanning={setIsPanning}
-          isInfiniteCanvas={true}
-          lastPanPointRef={lastPanPointRef}
+    <div
+      className="relative h-full w-full overflow-hidden"
+      style={{ background: "var(--canvas-bg)" }}
+    >
+      <div ref={containerRef} className="absolute inset-0">
+        <CanvasSurface
+          size={size}
+          devicePixelRatio={devicePixelRatio}
+          viewport={viewport}
+          elements={renderedElements}
+          pendingElement={interaction.pendingElement}
+          erasingIds={interaction.visuals.erasingIds}
+          selectedElements={selectedElements}
+          selectionBounds={textEditor.editingId ? null : selectionBounds}
+          showHandles={!interaction.visuals.marquee}
+          isTransforming={interaction.visuals.isTransforming}
+          marquee={interaction.visuals.marquee}
+          bindingHighlightElement={bindingHighlightElement}
+          alignmentGuides={interaction.visuals.guides}
+          eraserTrail={interaction.visuals.eraserTrail}
+          activeHandle={interaction.visuals.activeHandle}
+          snapPoint={interaction.visuals.snapPoint}
+          cursor={interaction.cursor}
+          canvasFilter={canvasFilter}
+          interactiveCanvasRef={interactiveCanvasRef}
+          onPointerDown={interaction.handlers.onPointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={interaction.handlers.onPointerUp}
+          onPointerCancel={interaction.handlers.onPointerCancel}
+          onDoubleClick={interaction.handlers.onDoubleClick}
+          onContextMenu={handleContextMenu}
         />
 
-        {/* Collaborative users panel */}
-        {isCollaborative && showUserPanel && users.length > 0 && (
-          <div className="user-panel absolute top-3 right-3 bg-white/95 p-5 rounded-xl shadow-lg border border-gray-200 z-50 backdrop-blur-sm transition-all duration-200 ease-in-out hover:shadow-xl animate-fadeIn">
-            <h3 className="text-sm font-semibold mb-4 text-gray-800 flex items-center border-b border-gray-100 pb-3">
-              <FiUsers className="mr-2 text-blue-600" size={18} />
-              Connected Users ({users.length})
-            </h3>
-            <ul className="space-y-3">
-              {users.map((user) => (
-                <li
-                  key={user.id}
-                  className="flex items-center text-sm p-2 hover:bg-gray-50 rounded-lg transition-colors duration-150"
-                >
-                  <div className="relative">
-                    <div className="w-3 h-3 mr-3 rounded-full bg-green-500 connection-indicator"></div>
-                    <div className="absolute inset-0 w-3 h-3 rounded-full bg-green-500 animate-ping opacity-75"></div>
-                  </div>
-                  <span className="text-gray-700 font-medium">{user.tag}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {/* Connection status indicator */}
         {isCollaborative && (
-          <div
-            className={`absolute bottom-3 left-3 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center z-50 ${
-              isConnected
-                ? "bg-green-50 text-green-700"
-                : "bg-red-50 text-red-700"
-            } shadow-sm backdrop-blur-sm`}
-          >
-            <div
-              className={`w-2.5 h-2.5 mr-2 rounded-full ${
-                isConnected ? "bg-green-500 connection-indicator" : "bg-red-500"
-              }`}
-            ></div>
-            {isConnected ? "Connected" : "Offline"}
-          </div>
-        )}
-
-        {/* Context menu */}
-        {contextMenu.visible && (
-          <ContextMenu
-            x={contextMenu.x}
-            y={contextMenu.y}
-            onClose={closeContextMenu}
-            onDuplicate={handleDuplicate}
-            onDelete={handleDeleteShape}
-            onChangeFillColor={handleChangeFillColor}
-            onBringForward={handleBringForward}
-            onSendBackward={handleSendBackward}
-            onBringToFront={handleBringToFront}
-            onSendToBack={handleSendToBack}
-            isShapeSelected={selectedId !== null}
-            isMultipleSelection={false}
+          <RemoteCursors
+            cursors={cursors}
+            currentUserId={userId}
+            viewport={viewport}
           />
         )}
 
-        {/* Fill Color Modal */}
-        <FillColorModal
-          isOpen={fillColorModal.visible}
-          onClose={() =>
-            setFillColorModal({ visible: false, initialColor: "transparent" })
-          }
-          onSelectColor={handleFillColorChange}
-          initialColor={fillColorModal.initialColor}
+        {textEditor.editingElement && (
+          <TextEditorOverlay
+            element={textEditor.editingElement}
+            viewport={viewport}
+            canvasFilter={canvasFilter}
+            onChange={textEditor.updateText}
+            onFinish={textEditor.stopEditing}
+          />
+        )}
+
+        {contextMenu && (
+          <ContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            items={contextMenuItems}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
+      </div>
+
+      {/* Top-centre tool island */}
+      <div className="pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2">
+        <Toolbar
+          tool={tool}
+          onToolChange={handleToolChange}
+          toolLocked={toolLocked}
+          onToggleToolLock={() => setToolLocked((locked) => !locked)}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onUndo={undo}
+          onRedo={redo}
+          onClear={clearCanvas}
+          onExport={exportPNG}
+          onShare={isCollaborative ? copyShareableLink : undefined}
+          linkCopied={linkCopied}
+          onToggleUsers={isCollaborative ? () => setShowUsers((s) => !s) : undefined}
+          userCount={users.length}
+          onToggleAI={openAIPanel}
+          isAIPanelOpen={isAIPanelOpen}
+          isAiGenerating={ai.isGenerating}
+          aiConversationCount={ai.history.length}
+          themePreference={themePreference}
+          onCycleTheme={cycleTheme}
         />
       </div>
+
+      {/* Left properties panel */}
+      {showStylePanel && (
+        <div className="pointer-events-none absolute left-3 top-20 z-30 max-h-[calc(100%-6rem)] overflow-y-auto">
+          <StylePanel
+            style={style}
+            onStyleChange={handleStyleChange}
+            hasSelection={selectedElements.length > 0}
+            showFill={showFillControls}
+            showEdgeStyle={showEdgeStyleControls}
+            onDelete={deleteSelection}
+            onDuplicate={duplicateSelection}
+            onBringToFront={() => reorderSelection("front")}
+            onSendToBack={() => reorderSelection("back")}
+          />
+        </div>
+      )}
+
+      <div className="absolute bottom-3 left-3 z-30 flex items-center gap-2">
+        <ZoomControls
+          zoom={viewport.zoom}
+          onZoomIn={zoomIn}
+          onZoomOut={zoomOut}
+          onReset={resetZoom}
+          onZoomToFit={() => zoomToFit(selectionBounds ?? sceneBounds)}
+        />
+
+        {isCollaborative && (
+          <div
+            className="island flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium"
+            style={{
+              color: isConnected ? "var(--success)" : "var(--text-faint)",
+            }}
+          >
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                background: isConnected
+                  ? "var(--success)"
+                  : "var(--text-faint)",
+              }}
+            />
+            {isConnected ? "Live" : "Offline"}
+          </div>
+        )}
+      </div>
+
+      {isCollaborative && showUsers && users.length > 0 && (
+        <div className="island absolute bottom-14 left-3 z-30 w-52 p-3">
+          <p
+            className="mb-2 text-[11px] font-medium"
+            style={{ color: "var(--text-muted)" }}
+          >
+            In this room ({users.length})
+          </p>
+          <ul className="space-y-1.5">
+            {users.map((user) => (
+              <li key={user.id} className="flex items-center gap-2 text-sm">
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ background: "var(--success)" }}
+                />
+                {user.tag}
+                {user.id === userId && (
+                  <span className="text-xs" style={{ color: "var(--text-faint)" }}>
+                    (you)
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <AIAgentPanel
+        isOpen={isAIPanelOpen}
+        prompt={ai.prompt}
+        history={ai.history}
+        isGenerating={ai.isGenerating}
+        error={ai.error}
+        onPromptChange={ai.setPrompt}
+        onSend={ai.generate}
+        onDismissError={ai.dismissError}
+        onClose={() => setIsAIPanelOpen(false)}
+        onResetConversation={ai.resetConversation}
+      />
     </div>
   );
 };

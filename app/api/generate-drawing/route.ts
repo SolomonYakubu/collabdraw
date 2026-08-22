@@ -1,667 +1,722 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import {
   GoogleGenerativeAI,
-  HarmCategory,
   HarmBlockThreshold,
+  HarmCategory,
+  SchemaType,
+  type ResponseSchema,
 } from "@google/generative-ai";
-import { nanoid } from "nanoid";
-import { io } from "socket.io-client";
+
+import {
+  MAX_EDGES,
+  MAX_LABEL_LENGTH,
+  MAX_NODES,
+  NODE_ACCENTS,
+  NODE_SHAPES,
+} from "../../services/ai/graph";
+import {
+  INTENT_KINDS,
+  parseDrawingIntent,
+  PLACEMENTS,
+} from "../../services/ai/intent";
+import { MAX_GRID_SIDE } from "../../services/ai/grid";
+import { MAX_SCENE_ITEMS, SCENE_SHAPES } from "../../services/ai/scene";
+import {
+  MAX_MESSAGES,
+  MAX_PARTICIPANTS,
+  MESSAGE_KINDS,
+} from "../../services/ai/sequence";
+import {
+  EMPTY_SCENE,
+  formatSceneForPrompt,
+  type SceneSummary,
+} from "../../services/ai/describeScene";
 
 /**
- * Attempts to repair malformed JSON by fixing common syntax errors
- * @param jsonText - The potentially malformed JSON string
- * @returns A possibly repaired JSON string
+ * Drawing generation.
+ *
+ * The model returns a *structured description* under an enforced JSON schema,
+ * and the client turns that into elements. Three kinds are understood:
+ *
+ *  - `diagram` — nodes and edges, laid out in layers.
+ *  - `grid`    — rows and columns: boards, tables, calendars, matrices.
+ *  - `scene`   — free placement on a normalised 0-100 canvas.
+ *
+ * The first version only had `diagram`, which meant every request came back as a
+ * block diagram: asking for a tic-tac-toe board produced boxes with arrows
+ * between them. Adding kinds fixes that without giving up what made the diagram
+ * path reliable — the model is still never asked for absolute pixel coordinates,
+ * and `responseSchema` still guarantees the reply parses, so there is no JSON to
+ * repair and no bad geometry to rescue afterwards.
  */
-function repairJsonString(jsonText: string): string {
-  // Step 1: Basic cleanup
-  let repairedJson = jsonText.trim();
 
-  // Step 2: Fix common JSON formatting issues
-  repairedJson = repairedJson
-    // Fix trailing commas in objects and arrays
-    .replace(/,\s*}/g, "}")
-    .replace(/,\s*\]/g, "]")
-    // Fix missing quotes around property names
-    .replace(/(\{|\,)\s*([a-zA-Z0-9_]+)\s*:/g, '$1"$2":')
-    // Fix single quotes used for strings (convert to double quotes)
-    .replace(/'([^']*?)'/g, '"$1"')
-    // Fix unescaped quotes in strings
-    .replace(/"([^"\\]*?)\\?"([^"\\]*?)"/g, '"$1\\"$2"');
-
-  // Step 3: Advanced repairs for more severe issues
-  // Try to fix missing commas between objects in array
-  repairedJson = repairedJson.replace(/}\s*{/g, "},{");
-
-  // Fix missing quotes around property values that should be strings
-  repairedJson = repairedJson.replace(
-    /:\s*([a-zA-Z0-9#]+)(\s*[,}])/g,
-    ':"$1"$2'
-  );
-
-  // Step 4: Ensure the string is properly wrapped in an array
-  if (!repairedJson.startsWith("[")) {
-    repairedJson = "[" + repairedJson;
-  }
-  if (!repairedJson.endsWith("]")) {
-    repairedJson = repairedJson + "]";
-  }
-
-  return repairedJson;
-}
-
-/**
- * Advanced JSON repair function with multiple repair strategies
- * @param jsonText - The potentially malformed JSON string
- * @returns A possibly repaired JSON string or null if repair failed
- */
-function advancedJsonRepair(jsonText: string): string | null {
-  // Skip if already valid
-  try {
-    JSON.parse(jsonText);
-    return jsonText; // Already valid
-  } catch (error) {
-    console.log("JSON is invalid, attempting repairs...");
-  }
-
-  // Strategy 1: Basic common JSON syntax fixes
-  try {
-    const basicRepaired = repairJsonString(jsonText);
-    JSON.parse(basicRepaired);
-    console.log("Basic JSON repair succeeded");
-    return basicRepaired;
-  } catch (error) {
-    console.log("Basic repair failed, trying advanced strategies");
-  }
-
-  // Strategy 2: Try to extract valid JSON array from the text
-  try {
-    // Look for array-like patterns and extract them
-    const arrayMatch = jsonText.match(/\[\s*\{[\s\S]*?\}\s*\]/);
-    if (arrayMatch) {
-      const extracted = arrayMatch[0];
-      const basicRepaired = repairJsonString(extracted);
-      JSON.parse(basicRepaired);
-      console.log("Array extraction repair succeeded");
-      return basicRepaired;
-    }
-  } catch (error) {
-    console.log("Array extraction repair failed");
-  }
-
-  // Strategy 3: Try to build a valid array from any object-like structures
-  try {
-    // Find all object-like structures
-    const objectMatches = Array.from(jsonText.matchAll(/\{[^{}]*\}/g));
-    if (objectMatches && objectMatches.length > 0) {
-      // Join all found objects into an array
-      const objectsArray = `[${objectMatches.map((m) => m[0]).join(",")}]`;
-      const repaired = repairJsonString(objectsArray);
-      JSON.parse(repaired);
-      console.log("Object collection repair succeeded");
-      return repaired;
-    }
-  } catch (error) {
-    console.log("Object collection repair failed");
-  }
-
-  // Strategy 4: Extreme case - try to manually construct objects from key-value patterns
-  try {
-    // This is a last resort that tries to find property:value patterns and rebuild objects
-    const propValueMatches = jsonText.match(
-      /["']?(\w+)["']?\s*:\s*["']?([^,"'{}[\]]+)["']?/g
-    );
-    if (propValueMatches && propValueMatches.length > 0) {
-      // Group properties that seem to belong to the same object
-      const properties = {};
-      let currentTool = null;
-
-      propValueMatches.forEach((match) => {
-        const [prop, value] = match
-          .split(":")
-          .map((s) => s.trim().replace(/["']/g, ""));
-        if (prop === "tool") {
-          currentTool = value;
-          properties[currentTool] = properties[currentTool] || {};
-        }
-        if (currentTool) {
-          properties[currentTool][prop] = value;
-        }
-      });
-
-      // Convert the grouped properties into an array of objects
-      const objects = Object.values(properties);
-      if (objects.length > 0) {
-        const jsonArray = JSON.stringify(objects);
-        console.log("Manual property extraction succeeded");
-        return jsonArray;
-      }
-    }
-  } catch (error) {
-    console.log("Manual property extraction failed");
-  }
-
-  return null; // All repair attempts failed
-}
-
-// Gemini model name for multimodal capabilities
-const MODEL_NAME = "gemini-2.5-flash-preview-04-17";
-
-// Canvas dimensions - default values for the drawing area
-const CANVAS_WIDTH = 1600;
-const CANVAS_HEIGHT = 900;
-
-// Get API key from environment variable (set this in your project's .env file)
+const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 const API_KEY = process.env.GEMINI_API_KEY;
-// Server URL for collaboration
-const SOCKET_SERVER_URL =
-  process.env.NEXT_PUBLIC_SOCKET_SERVER_URL || "http://localhost:3001";
 
-export async function POST(req: NextRequest) {
+/** Enforced reply shape: an envelope plus one payload per kind of drawing. */
+const RESPONSE_SCHEMA: ResponseSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    kind: {
+      type: SchemaType.STRING,
+      format: "enum",
+      enum: INTENT_KINDS as unknown as string[],
+      description:
+        "Which payload you filled in. 'sequence' for an ordered exchange between participants over time — most \"how does X work\" questions; 'scene' for a picture of something or a spatial layout; 'grid' for rows and columns (boards, tables, calendars, matrices); 'diagram' for abstract things joined by arrows, with no time axis and no picture.",
+    },
+    title: {
+      type: SchemaType.STRING,
+      description: "A short name for the drawing.",
+    },
+    summary: {
+      type: SchemaType.STRING,
+      description:
+        "One or two sentences for the user describing what you produced or changed.",
+    },
+    placement: {
+      type: SchemaType.STRING,
+      format: "enum",
+      enum: PLACEMENTS as unknown as string[],
+      description:
+        "Where your output goes. 'add' extends what is on the canvas — the usual case when you are adding to or continuing an existing drawing. 'replace' clears the canvas first; use it when the user asks to start over, or when you are producing a different rendering of the same thing so the old one should not remain. 'beside' keeps the canvas and puts your output in clear space next to it, for a separate drawing that should stand alongside.",
+    },
+
+    diagram: {
+      type: SchemaType.OBJECT,
+      description:
+        "Fill this only when kind is 'diagram': things connected to other things.",
+      properties: {
+        direction: {
+          type: SchemaType.STRING,
+          format: "enum",
+          enum: ["down", "right"],
+          description:
+            "'down' for processes and hierarchies, 'right' for pipelines and request flows.",
+        },
+        nodes: {
+          type: SchemaType.ARRAY,
+          description: `The boxes. At most ${MAX_NODES}.`,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              id: {
+                type: SchemaType.STRING,
+                description:
+                  "Short identifier referenced by edges. Reuse an existing node's exact label to attach to it.",
+              },
+              label: {
+                type: SchemaType.STRING,
+                description: `Text in the box, under ${MAX_LABEL_LENGTH} characters.`,
+              },
+              shape: {
+                type: SchemaType.STRING,
+                format: "enum",
+                enum: NODE_SHAPES as unknown as string[],
+                description:
+                  "'rectangle' for a step or component, 'diamond' for a decision, 'ellipse' for a start or end point.",
+              },
+              accent: {
+                type: SchemaType.STRING,
+                format: "enum",
+                enum: NODE_ACCENTS as unknown as string[],
+                description:
+                  "Background colour; 'none' leaves the box unfilled.",
+              },
+            },
+            required: ["id", "label", "shape", "accent"],
+          },
+        },
+        edges: {
+          type: SchemaType.ARRAY,
+          description: `Connections between nodes. At most ${MAX_EDGES}.`,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              from: { type: SchemaType.STRING, description: "Source node id." },
+              to: { type: SchemaType.STRING, description: "Target node id." },
+              label: {
+                type: SchemaType.STRING,
+                description: "Short text such as 'yes' or 'no'; empty if none.",
+              },
+              dashed: {
+                type: SchemaType.BOOLEAN,
+                description: "True for optional or asynchronous relationships.",
+              },
+            },
+            required: ["from", "to", "label", "dashed"],
+          },
+        },
+        removedEdges: {
+          type: SchemaType.ARRAY,
+          description:
+            "Existing connections to delete. Needed when inserting a node between two already-connected ones. Empty array otherwise.",
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              from: { type: SchemaType.STRING },
+              to: { type: SchemaType.STRING },
+            },
+            required: ["from", "to"],
+          },
+        },
+      },
+      required: ["direction", "nodes", "edges", "removedEdges"],
+    },
+
+    grid: {
+      type: SchemaType.OBJECT,
+      description:
+        "Fill this only when kind is 'grid': anything arranged in rows and columns. The application draws perfectly even cells, so give only counts and contents.",
+      properties: {
+        rows: {
+          type: SchemaType.INTEGER,
+          description: `Number of rows, 1 to ${MAX_GRID_SIDE}.`,
+        },
+        columns: {
+          type: SchemaType.INTEGER,
+          description: `Number of columns, 1 to ${MAX_GRID_SIDE}.`,
+        },
+        style: {
+          type: SchemaType.STRING,
+          format: "enum",
+          enum: ["board", "table"],
+          description:
+            "'board' draws only the lines between cells, which is what a tic-tac-toe or noughts-and-crosses grid looks like. 'table' outlines every cell.",
+        },
+        headerRow: {
+          type: SchemaType.BOOLEAN,
+          description: "Shade the first row, for a table with column headings.",
+        },
+        cells: {
+          type: SchemaType.ARRAY,
+          description:
+            "Only the cells that have content. Leave the array empty for a blank grid.",
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              row: {
+                type: SchemaType.INTEGER,
+                description: "0-based row index.",
+              },
+              column: {
+                type: SchemaType.INTEGER,
+                description: "0-based column index.",
+              },
+              text: {
+                type: SchemaType.STRING,
+                description: "Cell contents, e.g. 'X', 'O', or a short label.",
+              },
+              accent: {
+                type: SchemaType.STRING,
+                format: "enum",
+                enum: NODE_ACCENTS as unknown as string[],
+                description: "Cell colour; 'none' for plain.",
+              },
+            },
+            required: ["row", "column", "text", "accent"],
+          },
+        },
+      },
+      required: ["rows", "columns", "style", "headerRow", "cells"],
+    },
+
+    sequence: {
+      type: SchemaType.OBJECT,
+      description:
+        "Fill this only when kind is 'sequence': who does what, in order, over time. Lifelines, spacing and label placement are computed for you — give only the participants and the ordered messages.",
+      properties: {
+        participants: {
+          type: SchemaType.ARRAY,
+          description: `The actors, left to right in the order they first take part. Two to ${MAX_PARTICIPANTS}.`,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              id: {
+                type: SchemaType.STRING,
+                description: "Short identifier referenced by messages.",
+              },
+              label: {
+                type: SchemaType.STRING,
+                description:
+                  "Name shown at the top, e.g. 'Client', 'API', 'Database'. Keep it short.",
+              },
+              accent: {
+                type: SchemaType.STRING,
+                format: "enum",
+                enum: NODE_ACCENTS as unknown as string[],
+                description: "Header colour; 'none' for plain.",
+              },
+            },
+            required: ["id", "label", "accent"],
+          },
+        },
+        messages: {
+          type: SchemaType.ARRAY,
+          description: `The exchanges, in the order they happen. At most ${MAX_MESSAGES}.`,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              from: { type: SchemaType.STRING, description: "Sender's id." },
+              to: {
+                type: SchemaType.STRING,
+                description: "Recipient's id. The same as 'from' for a self-call.",
+              },
+              label: {
+                type: SchemaType.STRING,
+                description:
+                  "What is sent, e.g. 'POST /pay (key: 123)' or '200 OK'. Short.",
+              },
+              kind: {
+                type: SchemaType.STRING,
+                format: "enum",
+                enum: MESSAGE_KINDS as unknown as string[],
+                description:
+                  "'call' for a request (solid), 'return' for what comes back (dashed), 'self' for work a participant does on its own.",
+              },
+              section: {
+                type: SchemaType.STRING,
+                description:
+                  "Starts a labelled phase at this message, e.g. 'First attempt' or 'Duplicate retry'. Empty string for most messages.",
+              },
+            },
+            required: ["from", "to", "label", "kind", "section"],
+          },
+        },
+      },
+      required: ["participants", "messages"],
+    },
+
+    scene: {
+      type: SchemaType.OBJECT,
+      description:
+        "Fill this only when kind is 'scene': any other picture or layout. Positions are on a 0-100 square canvas, NOT pixels. 0,0 is top-left; 100,100 is bottom-right.",
+      properties: {
+        items: {
+          type: SchemaType.ARRAY,
+          description: `The shapes making up the picture. At most ${MAX_SCENE_ITEMS}. Order matters: later items draw on top.`,
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              shape: {
+                type: SchemaType.STRING,
+                format: "enum",
+                enum: SCENE_SHAPES as unknown as string[],
+                description: "Which primitive to draw.",
+              },
+              x: {
+                type: SchemaType.NUMBER,
+                description:
+                  "Left edge, 0-100. For a line or arrow, the start point's x.",
+              },
+              y: {
+                type: SchemaType.NUMBER,
+                description:
+                  "Top edge, 0-100. For a line or arrow, the start point's y.",
+              },
+              width: {
+                type: SchemaType.NUMBER,
+                description:
+                  "Width, 0-100. For text, ignored. For a line or arrow, ignored.",
+              },
+              height: {
+                type: SchemaType.NUMBER,
+                description:
+                  "Height, 0-100. For text this sets the font size, so use about 4 for body text and 8 or more for a heading.",
+              },
+              x2: {
+                type: SchemaType.NUMBER,
+                description: "End point x for a line or arrow, 0-100. Else 0.",
+              },
+              y2: {
+                type: SchemaType.NUMBER,
+                description: "End point y for a line or arrow, 0-100. Else 0.",
+              },
+              text: {
+                type: SchemaType.STRING,
+                description:
+                  "For 'text', the words to draw. For a shape, an optional centred label. Empty otherwise.",
+              },
+              accent: {
+                type: SchemaType.STRING,
+                format: "enum",
+                enum: NODE_ACCENTS as unknown as string[],
+                description: "Colour; 'none' draws in the default ink.",
+              },
+              filled: {
+                type: SchemaType.BOOLEAN,
+                description:
+                  "True to fill the shape with its accent colour rather than leaving it as an outline.",
+              },
+              rotation: {
+                type: SchemaType.NUMBER,
+                description:
+                  "Clockwise rotation in degrees about the shape's own centre, 0-359. Use 0 unless the thing really is tilted — a roof strut, a leaning ladder, a rotated label, a clock hand. Lines and arrows do not need it; give them the ends you want instead.",
+              },
+            },
+            required: [
+              "shape",
+              "x",
+              "y",
+              "width",
+              "height",
+              "x2",
+              "y2",
+              "text",
+              "accent",
+              "filled",
+              "rotation",
+            ],
+          },
+        },
+      },
+      required: ["items"],
+    },
+  },
+  required: ["kind", "title", "summary", "placement"],
+};
+
+const SYSTEM_INSTRUCTION = `You draw on a whiteboard by describing what to draw.
+
+You never give pixel coordinates. Each kind of drawing has its own structure, and
+the application does the layout, sizing and spacing.
+
+CHOOSING A KIND
+Read the request and ask what the answer actually looks like. Do not default to a
+flowchart — most questions are not flowcharts.
+
+- Is it a thing with PARTS or a PICTURE of something?           -> "scene"
+- Is it arranged in ROWS AND COLUMNS?                           -> "grid"
+- Is it a SEQUENCE of exchanges between participants over time?  -> "sequence"
+- Is it ABSTRACT THINGS CONNECTED to each other?                -> "diagram"
+
+Worked examples, because this is where it usually goes wrong:
+- "how does idempotency work"        -> sequence (client, API, cache; the retry)
+- "how does OAuth work"              -> sequence
+- "how does a TCP handshake work"    -> sequence
+- "what happens when I type a URL"   -> sequence
+- "explain a pendulum's physics"     -> scene (drawn pendulum, labelled forces)
+- "draw a house" / "a cat" / "a rocket" -> scene
+- "a UI mock-up" / "a floor plan"    -> scene
+- "tic-tac-toe" / "a calendar" / "compare REST and GraphQL" -> grid
+- "our microservice architecture"    -> diagram
+- "the steps to onboard a customer"  -> diagram
+- "an org chart"                     -> diagram
+
+"how does X work" is a sequence far more often than a flowchart. Reach for
+"diagram" only when the answer really is boxes joined by arrows with no time
+axis and no picture.
+
+"sequence" — participants and ordered messages. Lifelines, spacing and labels are
+computed for you.
+- Participants left to right in the order they first appear.
+- One message per exchange, in order. 'call' for a request, 'return' for the
+  reply (drawn dashed), 'self' for work a participant does alone.
+- Use "section" to name a phase — "First attempt", "Duplicate retry" — on the
+  first message of that phase. This is how you show two runs of the same flow.
+- Put the concrete detail in the labels: "POST /pay (key: 123)", "200 OK (cached)".
+
+"grid" — anything on rows and columns: a tic-tac-toe or noughts-and-crosses
+board, chess or draughts board, a table, a calendar, a matrix, a seating plan.
+- Give rows, columns, and only the cells that have content.
+- style 'board' for game boards; 'table' when the cells hold data.
+- Tic-tac-toe is rows 3, columns 3, style 'board'.
+
+"scene" — a picture of something, or a layout in space. Whenever the request is
+about how something LOOKS or is physically arranged.
+- Big shapes first, then details on top, then labels. Later items draw over
+  earlier ones.
+- Be generous with detail. A drawing worth looking at is usually 10-25 items.
+- Keep it roughly centred and fill most of the canvas. Check the arithmetic:
+  x + width and y + height must stay under 100.
+- Nothing should sit on top of something it would obscure. Give arrows and their
+  labels their own space.
+- Label with the shape's or arrow's own "text" field; it is positioned for you.
+  Use a separate "text" item only for titles and free annotations.
+- "rotation" tilts a shape about its own centre, in degrees. Use it when
+  something genuinely sits at an angle — a roof strut, a leaning ladder — and
+  leave it at 0 otherwise.
+- For a forces figure: draw the object away from its rest position so the forces
+  are distinguishable, one arrow per force labelled with its symbol, a dashed
+  line for the rest position, and a marker at the pivot.
+
+"diagram" — abstract things connected to abstract things: architectures, org
+charts, state machines, mind maps, decision trees, process steps.
+- Labels: one to four words, under 24 characters. The label decides how big its
+  box is drawn.
+- Edge direction matters: cause to effect, caller to callee, step to next step.
+- 'diamond' for a decision, with its conditions as the outgoing edge labels.
+- Loops are fine — send "not resolved" back to the step it repeats.
+- Aim for 4-10 nodes, all connected.
+- To insert B between A and C: add B, add A->B and B->C, and put
+  {"from":"A","to":"C"} in removedEdges.
+
+PLACEMENT — where your output goes
+You are told what is already on the canvas, and where. Choose deliberately:
+- "add" when you are extending, finishing or continuing what is there. A grid is
+  written into the existing board; a scene lands on the existing drawing.
+- "replace" when your output supersedes what is there — the user asked to start
+  over, or asked for the same thing drawn a different way, so leaving the old
+  version would just be two drawings on top of each other.
+- "beside" for a separate drawing that should stand next to the existing one.
+
+If the user says a previous answer was wrong, or asks for a different rendering of
+the same subject, that is "replace" — not "add".
+
+General:
+- Do exactly what was asked. Do not turn a picture into a diagram about the
+  picture, and do not add commentary boxes.
+- Keep text short everywhere. Long strings make big shapes and crowded drawings.
+
+CONTINUING WHAT IS ALREADY THERE
+Before each request you are given the canvas twice: as a picture, and as a
+structured description. Look at the picture to understand what has been drawn —
+especially freehand strokes, which no description can convey — and use the
+description for the exact coordinates and names to build on.
+- If a grid is described and you are adding to it, reply with "grid", the SAME
+  rows and columns, and the FULL list of cells you want to end up with. It is
+  updated in place. To take a turn in a game, repeat the existing marks and add
+  yours.
+- If canvas items are listed in 0-100 coordinates and you are adding to that
+  drawing, reply with "scene" in those same coordinates and list only what is NEW.
+- If diagram nodes are listed, reply with "diagram", list only new nodes, and
+  refer to existing ones in edges by their exact existing label.`
+
+const SAFETY_SETTINGS = [
+  HarmCategory.HARM_CATEGORY_HARASSMENT,
+  HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+  HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+  HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+].map((category) => ({
+  category,
+  threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+}));
+
+interface RequestBody {
+  prompt?: unknown;
+  scene?: unknown;
+  /** A data URL snapshot of the canvas. */
+  image?: unknown;
+  history?: unknown;
+}
+
+/**
+ * Largest snapshot accepted, as base64 characters. Roughly 3 MB of image, which
+ * a 896px-wide PNG stays comfortably under.
+ */
+const MAX_IMAGE_BASE64 = 4_000_000;
+
+const SUPPORTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+/**
+ * Pull a Gemini inline image part out of a data URL.
+ *
+ * A description cannot convey a freehand sketch, so the canvas is also sent as a
+ * picture; anything malformed or oversized is simply dropped rather than failing
+ * the request, since the structured description alone still works.
+ */
+const parseInlineImage = (
+  input: unknown,
+): { mimeType: string; data: string } | null => {
+  if (typeof input !== "string" || !input.startsWith("data:")) {
+    return null;
+  }
+
+  const separator = input.indexOf(",");
+  if (separator === -1) {
+    return null;
+  }
+
+  const header = input.slice(5, separator);
+  const data = input.slice(separator + 1);
+
+  if (!header.endsWith(";base64") || data.length > MAX_IMAGE_BASE64) {
+    return null;
+  }
+
+  const mimeType = header.slice(0, -";base64".length);
+
+  return SUPPORTED_IMAGE_TYPES.has(mimeType) ? { mimeType, data } : null;
+};
+
+interface HistoryTurn {
+  role: "user" | "model";
+  parts: Array<{ text: string }>;
+}
+
+/** Keep the transcript short; the canvas graph already carries the state. */
+const MAX_HISTORY_TURNS = 8;
+
+const parseHistory = (input: unknown): HistoryTurn[] => {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const turns: HistoryTurn[] = [];
+
+  for (const candidate of input) {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+
+    const turn = candidate as { role?: unknown; parts?: unknown };
+    const role = turn.role === "model" ? "model" : "user";
+    const parts = Array.isArray(turn.parts) ? turn.parts : [];
+    const text = parts
+      .map((part) =>
+        part &&
+        typeof part === "object" &&
+        typeof (part as { text?: unknown }).text === "string"
+          ? (part as { text: string }).text
+          : "",
+      )
+      .filter(Boolean)
+      .join("\n");
+
+    if (text) {
+      turns.push({ role, parts: [{ text: text.slice(0, 2000) }] });
+    }
+  }
+
+  // Gemini requires the transcript to begin with a user turn.
+  const trimmed = turns.slice(-MAX_HISTORY_TURNS);
+  while (trimmed.length > 0 && trimmed[0].role !== "user") {
+    trimmed.shift();
+  }
+
+  return trimmed;
+};
+
+/**
+ * The scene description is produced by the client, so it only needs sanity
+ * limits here rather than full validation.
+ */
+const parseScene = (input: unknown): SceneSummary => {
+  if (!input || typeof input !== "object") {
+    return EMPTY_SCENE;
+  }
+
+  const scene = input as Partial<SceneSummary>;
+
+  return {
+    nodes: Array.isArray(scene.nodes) ? scene.nodes.slice(0, MAX_NODES) : [],
+    edges: Array.isArray(scene.edges) ? scene.edges.slice(0, MAX_EDGES) : [],
+    items: Array.isArray(scene.items) ? scene.items.slice(0, 80) : [],
+    grid: scene.grid ?? null,
+    bounds: scene.bounds ?? null,
+    otherCount:
+      typeof scene.otherCount === "number" && scene.otherCount > 0
+        ? Math.floor(scene.otherCount)
+        : 0,
+  };
+};
+
+export async function POST(request: NextRequest) {
+  if (!API_KEY) {
+    return NextResponse.json(
+      { error: "The AI assistant is not configured: GEMINI_API_KEY is unset." },
+      { status: 503 },
+    );
+  }
+
+  let body: RequestBody;
+
   try {
-    // Check if API key is available
-    if (!API_KEY) {
-      console.error("Gemini API key not configured");
-      return NextResponse.json(
-        { error: "Gemini API key not configured" },
-        { status: 500 }
+    body = (await request.json()) as RequestBody;
+  } catch {
+    return NextResponse.json(
+      { error: "Malformed request body." },
+      { status: 400 },
+    );
+  }
+
+  const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+
+  if (!prompt) {
+    return NextResponse.json(
+      { error: "A prompt is required." },
+      { status: 400 },
+    );
+  }
+
+  const scene = parseScene(body.scene);
+  const history = parseHistory(body.history);
+  const image = parseInlineImage(body.image);
+
+  try {
+    const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({
+      model: MODEL_NAME,
+      systemInstruction: SYSTEM_INSTRUCTION,
+      safetySettings: SAFETY_SETTINGS,
+      generationConfig: {
+        // Structured output: the reply is JSON matching RESPONSE_SCHEMA.
+        responseMimeType: "application/json",
+        responseSchema: RESPONSE_SCHEMA,
+        // Diagram structure should be reproducible, not creative.
+        temperature: 0.2,
+        maxOutputTokens: 8192,
+      },
+    });
+
+    const text = [
+      image
+        ? "The attached image shows the canvas as it looks right now."
+        : null,
+      `Current canvas:\n${formatSceneForPrompt(scene)}`,
+      `Request: ${prompt}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const result = await model
+      .startChat({ history })
+      .sendMessage(
+        image ? [{ text }, { inlineData: image }] : text,
       );
-    }
 
-    // Parse request body to get the prompt
-    const body = await req.json();
-    const { prompt, currentState, history, userId, roomId } = body;
-
-    if (!prompt || typeof prompt !== "string") {
-      return NextResponse.json(
-        { error: "Prompt is required and must be a string" },
-        { status: 400 }
-      );
-    }
-
-    // Initialize the Gemini API client
-    const genAI = new GoogleGenerativeAI(API_KEY);
-    const model = genAI.getGenerativeModel({ model: MODEL_NAME });
-
-    // Configure safety settings
-    const safetySettings = [
-      {
-        category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-      },
-      {
-        category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-        threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-      },
-    ];
-
-    // Configure generation parameters
-    const generationConfig = {
-      temperature: 0.4, // Lower temperature for more deterministic results
-      topK: 32,
-      topP: 1,
-      maxOutputTokens: 65536, // Allow for detailed shape descriptions
-    };
-
-    // Format current canvas state information
-    let canvasStateDescription = "The canvas is currently empty.";
-    let detailedCanvasState = "";
-
-    if (
-      currentState &&
-      Array.isArray(currentState) &&
-      currentState.length > 0
-    ) {
-      canvasStateDescription = `The canvas currently contains ${currentState.length} shapes:`;
-
-      // Group shapes by type for better description
-      const shapeCountByType = currentState.reduce((acc, shape) => {
-        acc[shape.tool] = (acc[shape.tool] || 0) + 1;
-        return acc;
-      }, {});
-
-      // Create summary of shape types
-      const shapeTypeSummary = Object.entries(shapeCountByType)
-        .map(
-          ([type, count]) =>
-            `${count} ${type.toLowerCase()}${count !== 1 ? "s" : ""}`
-        )
-        .join(", ");
-
-      canvasStateDescription += ` ${shapeTypeSummary}.`;
-
-      // Create detailed shape descriptions (limit to first 15 shapes to avoid token limits)
-      detailedCanvasState = currentState
-        .slice(0, 15)
-        .map((shape, index) => {
-          let description = `Shape ${index + 1}: ${shape.tool} at position (${
-            shape.x
-          }, ${shape.y})`;
-
-          if (shape.fill && shape.fill !== "transparent") {
-            description += ` with ${shape.fill} fill`;
-          }
-
-          if (shape.tool === "Text" && shape.text) {
-            description += ` containing text: "${shape.text}"`;
-          } else if (shape.width && shape.height) {
-            description += ` with dimensions ${shape.width}×${shape.height}`;
-          } else if (shape.tool === "Line" || shape.tool === "Arrow") {
-            description += ` from (${shape.x1}, ${shape.y1}) to (${shape.x2}, ${shape.y2})`;
-          }
-
-          return description;
-        })
-        .join("\n");
-
-      // If there are more shapes not detailed, add a note
-      if (currentState.length > 15) {
-        detailedCanvasState += `\n(and ${
-          currentState.length - 15
-        } more shapes not described in detail)`;
-      }
-    }
+    const reply = result.response.text();
+    let parsed: unknown;
 
     try {
-      console.log("Calling Gemini API with prompt:", prompt);
-
-      // Prepare a context-enhanced prompt to provide canvas info and guidelines
-      const enhancedPrompt = `
-${prompt}
-
-CANVAS DIMENSIONS: Width: Infinte, Height: Infinite
-CURRENT CANVAS: ${canvasStateDescription}
-${detailedCanvasState ? `\nDETAILS:\n${detailedCanvasState}` : ""}
-
-IMPORTANT: Please respond with ONLY a syntactically valid JSON array. Do not include any explanation, markdown formatting, or text outside the JSON array.
-
-Valid JSON requirements:
-- Use double quotes (") for all strings and property names
-- No trailing commas in arrays or objects
-- All property names must be quoted
-- String values must be quoted
-- Numbers must NOT be quoted
-- Proper use of square brackets [] for arrays and curly braces {} for objects
-
-Valid shape objects must have these properties:
-- "tool": One of "Square", "Circle", "Diamond", "Line", "Arrow", "Text", "Freehand"
-- "x", "y": Position coordinates (coordinates should be within canvas dimensions: x: 0-${CANVAS_WIDTH}, y: 0-${CANVAS_HEIGHT})
-- "width", "height": Size for shapes (20-300)
-- "stroke": Color in hex format
-- "fill": Color in hex format or "transparent"
-- For Line/Arrow: Include "x1", "y1", "x2", "y2" coordinates (all within canvas dimensions)
-- For Freehand: Include "points" array with EXACTLY this format: [x1,y1, x2,y2, x3,y3, ...] where each pair represents a point in the drawing path. Include at least 15-30 points for smooth curves.
-- For Text: Include "text" property
-
-Example of valid JSON format:
-[
-  {
-    "tool": "Circle",
-    "x": 400,
-    "y": 300,
-    "width": 100,
-    "height": 100,
-    "stroke": "#000000",
-    "strokeWidth": 2,
-    "fill": "transparent"
-  },
-  {
-    "tool": "Freehand",
-    "stroke": "#FF5733",
-    "strokeWidth": 2,
-    "fill": "transparent",
-    "points": [100,100, 110,105, 120,115, 130,130]
-  }
-]
-
-Guidelines:
-1. Use diverse colors and vary stroke widths (1-3)
-2. For complex elements, combine multiple shapes
-3. If clearing is needed, include {"tool": "ClearCanvas"} first
-4. Position new elements to complement existing ones, avoid overlap
-5. Only modify requested elements, don't recreate the entire scene
-6. For freehand drawings, ensure points create smooth, continuous paths with proper coordinates
-7. Feel free to use the entire canvas area (Infinite Height, Infinite Width) for your drawings
-`;
-
-      // Initialize chat with history
-      const chat = model.startChat({
-        generationConfig,
-        safetySettings,
-        history: history || [],
-      });
-
-      // Send the enhanced prompt to the chat
-      const result = await chat.sendMessage(enhancedPrompt);
-      const text = result.response.text();
-
-      console.log("Received response from Gemini API");
-
-      // Extract the JSON from the response
-      // The response might contain markdown code blocks or extra text
-      // Using a more flexible regex to extract JSON array from different response formats
-      let jsonText;
-
-      // First try to extract from markdown code blocks
-      const codeBlockMatch = text.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
-      if (codeBlockMatch && codeBlockMatch[1]) {
-        jsonText = codeBlockMatch[1];
-      } else {
-        // If no code block, try to extract a raw JSON array
-        const jsonArrayMatch = text.match(/\[\s*[\s\S]*?\]\s*(?!\])/);
-        if (jsonArrayMatch) {
-          jsonText = jsonArrayMatch[0];
-        } else {
-          // Last resort: look for anything that might be JSON
-          const possibleJsonMatch = text.match(/\[\s*\{[\s\S]*?\}\s*\]/);
-          jsonText = possibleJsonMatch ? possibleJsonMatch[0] : null;
-        }
-      }
-
-      if (!jsonText) {
-        console.error("Failed to extract JSON from response:", text);
-        return NextResponse.json(
-          {
-            error: "Failed to parse AI response - no valid JSON found",
-            rawResponse: text.substring(0, 500), // Include part of the response for debugging
-          },
-          { status: 500 }
-        );
-      }
-
-      // Parse the JSON to validate it
-      try {
-        console.log(
-          "Attempting to parse extracted JSON:",
-          jsonText.substring(0, 200) + "..."
-        );
-
-        let shapes;
-
-        // First attempt: Try parsing the extracted text directly
-        try {
-          shapes = JSON.parse(jsonText);
-          console.log("JSON parsed successfully on first attempt");
-        } catch (directParseError) {
-          console.log("Direct JSON parsing failed, attempting repairs");
-
-          // Second attempt: Try applying the advanced JSON repair function
-          const repairedJson = advancedJsonRepair(jsonText);
-
-          if (!repairedJson) {
-            console.error("All JSON repair attempts failed");
-            throw new Error("Failed to repair malformed JSON response");
-          }
-
-          try {
-            shapes = JSON.parse(repairedJson);
-            console.log("JSON parsed successfully after repair");
-          } catch (repairedParseError) {
-            console.error(
-              "JSON parsing failed even after repair attempts:",
-              repairedParseError
-            );
-            throw new Error("Failed to parse JSON even after repairs");
-          }
-        }
-
-        // Validate that we got an array
-        if (!Array.isArray(shapes)) {
-          throw new Error("Response is not an array");
-        }
-
-        // Validate that the array contains at least one shape
-        if (shapes.length === 0) {
-          throw new Error("No shapes were generated");
-        }
-
-        // Validate each shape has the minimum required properties and fix if possible
-        const validShapes = shapes
-          .map((shape) => {
-            // Basic shape validation
-            if (!shape || typeof shape !== "object") {
-              return null;
-            }
-
-            // Create a normalized version of the shape with default values
-            const normalizedShape = { ...shape };
-
-            // Ensure it has a valid tool property
-            const validTools = [
-              "Square",
-              "Circle",
-              "Diamond",
-              "Line",
-              "Arrow",
-              "Text",
-              "Freehand",
-              "ClearCanvas",
-            ];
-
-            if (
-              !normalizedShape.tool ||
-              !validTools.includes(normalizedShape.tool)
-            ) {
-              return null;
-            }
-
-            // For ClearCanvas, no further validation needed
-            if (normalizedShape.tool === "ClearCanvas") {
-              return normalizedShape;
-            }
-
-            // Provide defaults for missing properties
-            if (normalizedShape.x === undefined) normalizedShape.x = 0;
-            if (normalizedShape.y === undefined) normalizedShape.y = 0;
-
-            // Ensure shapes always have visible colors
-            // If stroke is white or transparent, make it black for visibility
-            if (
-              !normalizedShape.stroke ||
-              normalizedShape.stroke === "#ffffff" ||
-              normalizedShape.stroke === "transparent"
-            ) {
-              normalizedShape.stroke = "#000000";
-            }
-
-            if (!normalizedShape.fill) normalizedShape.fill = "transparent";
-            if (!normalizedShape.strokeWidth) normalizedShape.strokeWidth = 2;
-
-            // For lines and arrows, ensure endpoint coordinates exist and are numbers
-            if (
-              normalizedShape.tool === "Line" ||
-              normalizedShape.tool === "Arrow"
-            ) {
-              if (normalizedShape.x1 === undefined)
-                normalizedShape.x1 = normalizedShape.x;
-              if (normalizedShape.y1 === undefined)
-                normalizedShape.y1 = normalizedShape.y;
-              if (normalizedShape.x2 === undefined)
-                normalizedShape.x2 = normalizedShape.x + 100;
-              if (normalizedShape.y2 === undefined)
-                normalizedShape.y2 = normalizedShape.y + 100;
-
-              // Convert string coordinates to numbers
-              if (typeof normalizedShape.x1 !== "number")
-                normalizedShape.x1 =
-                  parseFloat(normalizedShape.x1) || normalizedShape.x;
-              if (typeof normalizedShape.y1 !== "number")
-                normalizedShape.y1 =
-                  parseFloat(normalizedShape.y1) || normalizedShape.y;
-              if (typeof normalizedShape.x2 !== "number")
-                normalizedShape.x2 =
-                  parseFloat(normalizedShape.x2) || normalizedShape.x + 100;
-              if (typeof normalizedShape.y2 !== "number")
-                normalizedShape.y2 =
-                  parseFloat(normalizedShape.y2) || normalizedShape.y + 100;
-            }
-
-            // For rectangular shapes, ensure width and height exist
-            if (
-              ["Square", "Circle", "Diamond", "Text"].includes(
-                normalizedShape.tool
-              )
-            ) {
-              if (normalizedShape.width === undefined)
-                normalizedShape.width = 100;
-              if (normalizedShape.height === undefined)
-                normalizedShape.height = 100;
-
-              // Convert string dimensions to numbers
-              if (typeof normalizedShape.width !== "number")
-                normalizedShape.width =
-                  parseFloat(normalizedShape.width) || 100;
-              if (typeof normalizedShape.height !== "number")
-                normalizedShape.height =
-                  parseFloat(normalizedShape.height) || 100;
-            }
-
-            // For freehand, ensure points array exists and has the right format
-            if (normalizedShape.tool === "Freehand") {
-              if (
-                !Array.isArray(normalizedShape.points) ||
-                normalizedShape.points.length < 4
-              ) {
-                // Create a simple default path if points are missing or invalid
-                normalizedShape.points = [
-                  normalizedShape.x,
-                  normalizedShape.y,
-                  normalizedShape.x + 10,
-                  normalizedShape.y + 10,
-                  normalizedShape.x + 20,
-                  normalizedShape.y,
-                ];
-              }
-
-              // Ensure all points are numbers
-              normalizedShape.points = normalizedShape.points.map((p) =>
-                typeof p !== "number" ? parseFloat(p) || 0 : p
-              );
-            }
-
-            // For text, ensure it has a text property and visible color
-            if (normalizedShape.tool === "Text") {
-              // Ensure text content exists
-              if (!normalizedShape.text) {
-                normalizedShape.text =
-                  normalizedShape.label || normalizedShape.content || "Text";
-              }
-
-              // Force text to have visible fill color (never white or transparent)
-              normalizedShape.fill =
-                normalizedShape.fill &&
-                normalizedShape.fill !== "#ffffff" &&
-                normalizedShape.fill !== "transparent"
-                  ? normalizedShape.fill
-                  : "#000000";
-
-              // Set reasonable dimensions for text boxes if not provided
-              if (!normalizedShape.width) normalizedShape.width = 120;
-              if (!normalizedShape.height) normalizedShape.height = 60;
-
-              // Set default font properties
-              normalizedShape.fontSize = normalizedShape.fontSize || 18;
-              normalizedShape.fontFamily =
-                normalizedShape.fontFamily || "Arial, sans-serif";
-            }
-
-            return normalizedShape;
-          })
-          .filter(Boolean); // Remove any null values
-
-        if (validShapes.length === 0) {
-          throw new Error("All shapes were invalid after validation");
-        }
-
-        console.log(
-          `Successfully parsed ${validShapes.length} shapes from Gemini response`
-        );
-
-        // Add unique IDs to all shapes and creator info for collaboration
-        const processedShapes = validShapes.map((shape) => ({
-          ...shape,
-          id: `ai_${nanoid(10)}`,
-          createdBy: "ai",
-          userId: userId || "ai",
-        }));
-
-        // If we have roomId and userId, broadcast to all connected users in the room
-        if (roomId && userId) {
-          try {
-            // Connect to socket server to broadcast the shapes
-            const socket = io(SOCKET_SERVER_URL, {
-              query: { roomId, userId, userTag: "AI Assistant" },
-              transports: ["websocket"],
-              timeout: 5000,
-            });
-
-            socket.on("connect", () => {
-              console.log("Socket connected for AI shape broadcasting");
-              // Broadcast the shapes to everyone in the room
-              socket.emit("canvas-update", {
-                roomId,
-                userId,
-                shapes: processedShapes,
-                isPartial: false,
-              });
-
-              // Disconnect after sending
-              setTimeout(() => {
-                socket.disconnect();
-              }, 1000);
-            });
-
-            socket.on("connect_error", (err) => {
-              console.error("Socket connection error in AI route:", err);
-            });
-          } catch (socketError) {
-            console.error("Failed to broadcast AI shapes:", socketError);
-            // Continue anyway - we'll still return the shapes to the requester
-          }
-        }
-
-        return NextResponse.json({ shapes: processedShapes }, { status: 200 });
-      } catch (parseError) {
-        console.error("Failed to parse JSON from Gemini response:", parseError);
-        console.error("Raw text:", text);
-
-        return NextResponse.json(
-          {
-            error: "Failed to parse drawing data: " + parseError.message,
-            rawResponse: text.substring(0, 500), // Include part of the response for debugging
-          },
-          { status: 500 }
-        );
-      }
-    } catch (apiError) {
-      console.error("Error calling Gemini API:", apiError);
-
-      // Extract the most useful error information
-      const errorMessage =
-        apiError instanceof Error ? apiError.message : "Unknown API error";
-
+      parsed = JSON.parse(reply);
+    } catch {
+      // With a response schema this should not happen; a blocked or truncated
+      // reply is the realistic cause.
+      const reason = result.response.promptFeedback?.blockReason;
       return NextResponse.json(
-        { error: `Error from Gemini API: ${errorMessage}` },
-        { status: 500 }
+        {
+          error: reason
+            ? `The request was blocked (${reason}).`
+            : "The assistant returned an unreadable reply. Please try again.",
+        },
+        { status: 502 },
       );
     }
+
+    // Existing node ids are addressable in a diagram's edges, so the validator
+    // has to know about them or every new connection would look like a dangling
+    // edge and be discarded.
+    const knownIds = new Set(scene.nodes.map((node) => node.id));
+    const intent = parseDrawingIntent(parsed, knownIds);
+
+    if (!intent) {
+      return NextResponse.json(
+        {
+          error:
+            "The assistant did not describe anything drawable. Try rephrasing the request.",
+        },
+        { status: 422 },
+      );
+    }
+
+    return NextResponse.json({ intent }, { status: 200 });
   } catch (error) {
-    console.error("Unexpected error in generate-drawing API route:", error);
+    const message =
+      error instanceof Error ? error.message : "Unknown error from the model.";
+    console.error("generate-drawing failed:", message);
 
     return NextResponse.json(
-      {
-        error:
-          "Failed to generate drawing: " +
-          (error instanceof Error ? error.message : "Unknown error"),
-      },
-      { status: 500 }
+      { error: `The assistant could not be reached: ${message}` },
+      { status: 502 },
     );
   }
 }

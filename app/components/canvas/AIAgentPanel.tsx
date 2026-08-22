@@ -1,0 +1,251 @@
+"use client";
+
+/**
+ * The assistant panel.
+ *
+ * Deliberately quiet: no gradients, no glow, no bubble-per-message, no uppercase
+ * "AGENT" tags. It is a panel like the toolbar and the properties panel, built
+ * from the same tokens so it themes with them. Replies read as text on the page;
+ * only the user's own messages get a tint, which is enough to tell the two apart.
+ */
+import { memo, useEffect, useMemo, useRef } from "react";
+import { FiCornerDownLeft, FiTrash2, FiX } from "react-icons/fi";
+
+interface AIChatHistoryEntry {
+  role: "user" | "model";
+  parts: Array<{ text: string }>;
+}
+
+interface AIAgentPanelProps {
+  isOpen: boolean;
+  prompt: string;
+  history: AIChatHistoryEntry[];
+  isGenerating: boolean;
+  error: string | null;
+  onPromptChange: (prompt: string) => void;
+  onSend: () => void;
+  onDismissError: () => void;
+  onClose: () => void;
+  onResetConversation: () => void;
+}
+
+const SUGGESTIONS = [
+  "a flowchart for handling a support ticket",
+  "a tic-tac-toe board",
+  "a pendulum with its forces labelled",
+];
+
+function AIAgentPanel({
+  isOpen,
+  prompt,
+  history,
+  isGenerating,
+  error,
+  onPromptChange,
+  onSend,
+  onDismissError,
+  onClose,
+  onResetConversation,
+}: AIAgentPanelProps) {
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const messages = useMemo(
+    () =>
+      history.map((entry, index) => ({
+        id: `${entry.role}-${index}`,
+        role: entry.role,
+        text: entry.parts[0]?.text ?? "",
+      })),
+    [history],
+  );
+
+  useEffect(() => {
+    if (isOpen) {
+      endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [messages, isGenerating, isOpen, error]);
+
+  useEffect(() => {
+    if (isOpen) {
+      inputRef.current?.focus();
+    }
+  }, [isOpen]);
+
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <aside
+      className="island pointer-events-auto absolute right-3 top-3 z-40 flex max-h-[calc(100%-1.5rem)] w-[22rem] flex-col overflow-hidden"
+      aria-label="Assistant"
+    >
+      <header
+        className="flex items-center gap-2 border-b px-3 py-2"
+        style={{ borderColor: "var(--divider)" }}
+      >
+        <h2 className="text-[13px] font-semibold">Assistant</h2>
+        <span className="text-[11px]" style={{ color: "var(--text-faint)" }}>
+          sees your canvas
+        </span>
+
+        <div className="ml-auto flex items-center gap-0.5">
+          {messages.length > 0 && (
+            <button
+              type="button"
+              className="island-button h-7 w-7"
+              onClick={onResetConversation}
+              title="Clear the conversation"
+              aria-label="Clear the conversation"
+            >
+              <FiTrash2 size={13} />
+            </button>
+          )}
+          <button
+            type="button"
+            className="island-button h-7 w-7"
+            onClick={onClose}
+            title="Close"
+            aria-label="Close the assistant"
+          >
+            <FiX size={15} />
+          </button>
+        </div>
+      </header>
+
+      <div className="thin-scroll flex-1 overflow-y-auto px-3 py-3">
+        {messages.length === 0 ? (
+          <div className="flex flex-col gap-3">
+            <p
+              className="text-[13px] leading-relaxed"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Describe what to draw, or ask for a change to what is already here.
+            </p>
+            <div className="flex flex-col items-start gap-1.5">
+              {SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  onClick={() => {
+                    onPromptChange(suggestion);
+                    inputRef.current?.focus();
+                  }}
+                  className="rounded-md px-2 py-1 text-left text-[12px] transition-colors"
+                  style={{
+                    color: "var(--accent)",
+                    background: "var(--hover-bg)",
+                  }}
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {messages.map((message) =>
+              message.role === "user" ? (
+                <p
+                  key={message.id}
+                  className="self-end rounded-lg rounded-br-sm px-2.5 py-1.5 text-[13px] leading-relaxed"
+                  style={{
+                    maxWidth: "85%",
+                    background: "var(--hover-bg)",
+                    color: "var(--text)",
+                  }}
+                >
+                  {message.text}
+                </p>
+              ) : (
+                <p
+                  key={message.id}
+                  className="text-[13px] leading-relaxed"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  {message.text}
+                </p>
+              ),
+            )}
+
+            {isGenerating && (
+              <p
+                className="flex items-center gap-2 text-[13px]"
+                style={{ color: "var(--text-faint)" }}
+              >
+                <span
+                  className="h-3 w-3 animate-spin rounded-full border-2 border-current"
+                  style={{ borderTopColor: "transparent" }}
+                />
+                Drawing…
+              </p>
+            )}
+
+            <div ref={endRef} />
+          </div>
+        )}
+      </div>
+
+      {error && (
+        <div
+          className="mx-3 mb-2 flex items-start gap-2 rounded-lg px-2.5 py-2 text-[12px] leading-relaxed"
+          style={{ background: "var(--danger-bg)", color: "var(--danger)" }}
+          role="alert"
+        >
+          <span className="flex-1">{error}</span>
+          <button
+            type="button"
+            onClick={onDismissError}
+            className="shrink-0 opacity-70 transition-opacity hover:opacity-100"
+            aria-label="Dismiss the error"
+          >
+            <FiX size={13} />
+          </button>
+        </div>
+      )}
+
+      <div
+        className="border-t px-3 py-2.5"
+        style={{ borderColor: "var(--divider)" }}
+      >
+        <textarea
+          ref={inputRef}
+          value={prompt}
+          onChange={(event) => onPromptChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              onSend();
+            }
+          }}
+          rows={3}
+          placeholder="Draw a…"
+          disabled={isGenerating}
+          className="field w-full resize-none px-2.5 py-2 text-[13px] leading-relaxed outline-none"
+        />
+
+        <div className="mt-2 flex items-center justify-between">
+          <span className="text-[11px]" style={{ color: "var(--text-faint)" }}>
+            Enter to send
+          </span>
+          <button
+            type="button"
+            onClick={onSend}
+            disabled={isGenerating || !prompt.trim()}
+            className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-opacity disabled:opacity-40"
+            style={{
+              background: "var(--accent)",
+              color: "var(--accent-contrast)",
+            }}
+          >
+            Send
+            <FiCornerDownLeft size={12} />
+          </button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+export default memo(AIAgentPanel);

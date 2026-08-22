@@ -118,10 +118,9 @@ io.on('connection', (socket) => {
   socket.on('cursor-position', (data) => {
     const { roomId, userId, x, y, tag } = data;
     
-    // Only broadcast cursor position if we have complete data
+    // Only broadcast cursor position if we have complete data.
+    // Deliberately not logged: this fires ~20x/second per participant.
     if (roomId && userId !== undefined && x !== undefined && y !== undefined) {
-      console.log(`User ${userId} cursor position update in room ${roomId}:`, { x, y });
-      
       // Broadcast the cursor position to all other clients in the room
       socket.to(roomId).emit('cursor-position', {
         userId,
@@ -129,8 +128,6 @@ io.on('connection', (socket) => {
         y,
         tag
       });
-    } else {
-      console.warn('Invalid cursor position data:', data);
     }
   });
   
@@ -139,7 +136,6 @@ io.on('connection', (socket) => {
     const { roomId, userId, shape } = data;
     // Broadcast the in-progress shape to all other users in the room
     if (roomId && shape) {
-      console.log(`Broadcasting in-progress shape from user ${userId} in room ${roomId}`);
       socket.to(roomId).emit('shape-in-progress', {
         userId,
         shape
@@ -150,12 +146,18 @@ io.on('connection', (socket) => {
   // Handle drawing state updates (isDrawing flag)
   socket.on('drawing-state', (data) => {
     const { roomId } = data;
-    socket.to(roomId).emit('drawing-state', data);
+    if (typeof roomId === 'string' && roomId) {
+      socket.to(roomId).emit('drawing-state', data);
+    }
   });
   
   // Handle canvas updates (main drawing events)
   socket.on('canvas-update', (data) => {
-    const { roomId, userId, shapes, deletedShapeIds } = data;
+    const { roomId, shapes, deletedShapeIds } = data;
+
+    if (typeof roomId !== 'string' || !roomId) {
+      return;
+    }
     
     // Update stored canvas state
     if (shapes && shapes.length > 0) {
@@ -165,24 +167,21 @@ io.on('connection', (socket) => {
       } 
       // For partial updates (single shapes), merge with existing state
       else if (roomCanvasStates.has(roomId)) {
-        const currentShapes = roomCanvasStates.get(roomId);
-        
-        // Process each incoming shape
-        shapes.forEach(incomingShape => {
-          // Find the shape in our current state and update it
-          const existingShapeIndex = currentShapes.findIndex(s => s.id === incomingShape.id);
-          
-          if (existingShapeIndex >= 0) {
-            // Update existing shape
-            currentShapes[existingShapeIndex] = incomingShape;
+        const merged = [...roomCanvasStates.get(roomId)];
+
+        shapes.forEach((incomingShape) => {
+          const index = merged.findIndex(
+            (shape) => String(shape.id) === String(incomingShape.id)
+          );
+
+          if (index >= 0) {
+            merged[index] = incomingShape;
           } else {
-            // Add new shape if not found
-            currentShapes.push(incomingShape);
+            merged.push(incomingShape);
           }
         });
-        
-        // Update the room's canvas state
-        roomCanvasStates.set(roomId, currentShapes);
+
+        roomCanvasStates.set(roomId, merged);
       } else {
         // If we don't have a state yet, create one
         roomCanvasStates.set(roomId, shapes);
@@ -192,8 +191,9 @@ io.on('connection', (socket) => {
     // Handle shape deletions
     if (deletedShapeIds && deletedShapeIds.length > 0 && roomCanvasStates.has(roomId)) {
       const currentShapes = roomCanvasStates.get(roomId);
-      const updatedShapes = currentShapes.filter(shape => 
-        !deletedShapeIds.includes(shape.id)
+      const deleted = new Set(deletedShapeIds.map(String));
+      const updatedShapes = currentShapes.filter(
+        (shape) => !deleted.has(String(shape.id))
       );
       roomCanvasStates.set(roomId, updatedShapes);
     }
