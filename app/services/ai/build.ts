@@ -407,6 +407,175 @@ const SCENE_TOOLS = {
   text: "Text",
 } as const;
 
+/** World box a normalised (0-100) scene is mapped into. */
+export interface SceneFrame {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The world box a scene maps into: the area an existing drawing occupies when
+ * continuing it, or a fixed square placed at the origin otherwise. Shared so the
+ * streaming path and the authoritative build agree on where each item lands.
+ */
+export const sceneFrame = (
+  origin: { x: number; y: number },
+  anchorBox?: SceneFrame | null,
+): SceneFrame =>
+  anchorBox ?? {
+    x: origin.x,
+    y: origin.y,
+    width: SCENE_SIZE,
+    height: SCENE_SIZE,
+  };
+
+/**
+ * Build every element for one scene item, in draw order.
+ *
+ * Returns an array rather than a single element because some items are more than
+ * one: an arrow carries its label, a shape carries its bound text. The order
+ * within the array is the order the pieces stack, and matches what `buildScene`
+ * produced when this lived inside it — which is what lets a streamed scene be
+ * kept as-is once the full reply confirms it (same builder, same order, only ids
+ * and seeds differ).
+ */
+export const placeSceneItem = (
+  item: SceneItem,
+  frame: SceneFrame,
+  style: ElementStyle = DEFAULT_STYLE,
+): Shape[] => {
+  const toWorldX = (value: number) => frame.x + (value / 100) * frame.width;
+  const toWorldY = (value: number) => frame.y + (value / 100) * frame.height;
+  // Sizes use the smaller axis, so shapes are not stretched by an oblong frame.
+  const toWorldSize = (value: number) =>
+    (value / 100) * Math.min(frame.width, frame.height);
+
+  const stroke = strokeFor(item.accent, style.stroke);
+  const shared: Partial<ElementStyle> = {
+    ...style,
+    stroke,
+    fill:
+      item.filled && item.accent !== "none"
+        ? ACCENT_COLORS[item.accent].fill
+        : "transparent",
+    fillStyle: "solid",
+  };
+
+  const x = toWorldX(item.x);
+  const y = toWorldY(item.y);
+  const out: Shape[] = [];
+
+  if (item.shape === "line" || item.shape === "arrow") {
+    const connector = createElement(
+      SCENE_TOOLS[item.shape],
+      {
+        x1: x,
+        y1: y,
+        x2: toWorldX(item.x2),
+        y2: toWorldY(item.y2),
+        // Straight, because a scene's lines are placed deliberately and should
+        // land exactly where they were put.
+        edgeStyle: "straight",
+      },
+      stroke,
+      { ...shared, edgeStyle: "straight" },
+    )!;
+
+    /*
+     * A label on an arrow is how a figure names a force or a quantity, and it
+     * used to be dropped on the floor. It sits beside the middle of the line,
+     * offset along the perpendicular so it never lies on top of the stroke. It
+     * is drawn before the connector, so the connector sits on top.
+     */
+    if (item.text) {
+      const endX = toWorldX(item.x2);
+      const endY = toWorldY(item.y2);
+      const dx = endX - x;
+      const dy = endY - y;
+      const length = Math.hypot(dx, dy) || 1;
+      const offset = 14;
+
+      out.push(
+        centredText(
+          {
+            x: (x + endX) / 2 - (dy / length) * offset,
+            y: (y + endY) / 2 + (dx / length) * offset,
+          },
+          item.text,
+          Math.max(14, Math.round(style.fontSize * 0.8)),
+          stroke,
+          style,
+        ),
+      );
+    }
+
+    out.push(connector);
+    return out;
+  }
+
+  if (item.shape === "text") {
+    // Height drives the font size, which is how the model expresses emphasis.
+    const fontSize = Math.max(
+      12,
+      Math.min(96, Math.round(toWorldSize(item.height))),
+    );
+
+    const element = createElement(
+      "Text",
+      {
+        x,
+        y,
+        text: item.text,
+        fontSize,
+        angle: (item.rotation * Math.PI) / 180,
+      },
+      stroke,
+      { ...shared, fontSize },
+    );
+
+    return element ? [element] : [];
+  }
+
+  const container = createElement(
+    SCENE_TOOLS[item.shape],
+    {
+      x,
+      y,
+      width: (item.width / 100) * frame.width,
+      height: (item.height / 100) * frame.height,
+      angle: (item.rotation * Math.PI) / 180,
+    },
+    stroke,
+    shared,
+  )!;
+
+  if (!item.text) {
+    return [container];
+  }
+
+  // A shape with text gets a proper bound label, so it stays centred, sized to
+  // fit rather than spilling out of a small shape.
+  const label = createElement(
+    "Text",
+    { text: item.text, containerId: container.id },
+    stroke,
+    shared,
+  ) as TextShape;
+
+  const fitted = fitLabelToContainer(label, container);
+
+  out.push(
+    mutateElement(fitted.container, {
+      boundElements: [{ id: fitted.label.id, type: "text" }],
+    }),
+    fitted.label,
+  );
+
+  return out;
+};
+
 export const buildScene = (
   spec: SceneSpec,
   { origin, style = DEFAULT_STYLE, anchorBox }: BuildOptions,
@@ -414,145 +583,12 @@ export const buildScene = (
   // Continuing an existing drawing means mapping the normalised space onto the
   // area that drawing already occupies, so additions land where they belong
   // rather than as a separate picture underneath it.
-  const frame = anchorBox ?? {
-    x: origin.x,
-    y: origin.y,
-    width: SCENE_SIZE,
-    height: SCENE_SIZE,
-  };
-
-  const toWorldX = (value: number) => frame.x + (value / 100) * frame.width;
-  const toWorldY = (value: number) => frame.y + (value / 100) * frame.height;
-  // Sizes use the smaller axis, so shapes are not stretched by an oblong frame.
-  const toWorldSize = (value: number) =>
-    (value / 100) * Math.min(frame.width, frame.height);
+  const frame = sceneFrame(origin, anchorBox);
 
   const elements: Shape[] = [];
 
-  const place = (item: SceneItem): Shape | null => {
-    const stroke = strokeFor(item.accent, style.stroke);
-    const shared: Partial<ElementStyle> = {
-      ...style,
-      stroke,
-      fill:
-        item.filled && item.accent !== "none"
-          ? ACCENT_COLORS[item.accent].fill
-          : "transparent",
-      fillStyle: "solid",
-    };
-
-    const x = toWorldX(item.x);
-    const y = toWorldY(item.y);
-
-    if (item.shape === "line" || item.shape === "arrow") {
-      const connector = createElement(
-        SCENE_TOOLS[item.shape],
-        {
-          x1: x,
-          y1: y,
-          x2: toWorldX(item.x2),
-          y2: toWorldY(item.y2),
-          // Straight, because a scene's lines are placed deliberately and should
-          // land exactly where they were put.
-          edgeStyle: "straight",
-        },
-        stroke,
-        { ...shared, edgeStyle: "straight" },
-      )!;
-
-      /*
-       * A label on an arrow is how a figure names a force or a quantity, and it
-       * used to be dropped on the floor. It sits beside the middle of the line,
-       * offset along the perpendicular so it never lies on top of the stroke.
-       */
-      if (item.text) {
-        const endX = toWorldX(item.x2);
-        const endY = toWorldY(item.y2);
-        const dx = endX - x;
-        const dy = endY - y;
-        const length = Math.hypot(dx, dy) || 1;
-        const offset = 14;
-
-        elements.push(
-          centredText(
-            {
-              x: (x + endX) / 2 - (dy / length) * offset,
-              y: (y + endY) / 2 + (dx / length) * offset,
-            },
-            item.text,
-            Math.max(14, Math.round(style.fontSize * 0.8)),
-            stroke,
-            style,
-          ),
-        );
-      }
-
-      return connector;
-    }
-
-    if (item.shape === "text") {
-      // Height drives the font size, which is how the model expresses emphasis.
-      const fontSize = Math.max(
-        12,
-        Math.min(96, Math.round(toWorldSize(item.height))),
-      );
-
-      return createElement(
-        "Text",
-        {
-          x,
-          y,
-          text: item.text,
-          fontSize,
-          angle: (item.rotation * Math.PI) / 180,
-        },
-        stroke,
-        { ...shared, fontSize },
-      );
-    }
-
-    const container = createElement(
-      SCENE_TOOLS[item.shape],
-      {
-        x,
-        y,
-        width: (item.width / 100) * frame.width,
-        height: (item.height / 100) * frame.height,
-        angle: (item.rotation * Math.PI) / 180,
-      },
-      stroke,
-      shared,
-    )!;
-
-    if (!item.text) {
-      return container;
-    }
-
-    // A shape with text gets a proper bound label, so it stays centred, sized to
-    // fit rather than spilling out of a small shape.
-    const label = createElement(
-      "Text",
-      { text: item.text, containerId: container.id },
-      stroke,
-      shared,
-    ) as TextShape;
-
-    const fitted = fitLabelToContainer(label, container);
-
-    elements.push(
-      mutateElement(fitted.container, {
-        boundElements: [{ id: fitted.label.id, type: "text" }],
-      }),
-    );
-
-    return fitted.label;
-  };
-
   for (const item of spec.items) {
-    const element = place(item);
-    if (element) {
-      elements.push(element);
-    }
+    elements.push(...placeSceneItem(item, frame, style));
   }
 
   return {

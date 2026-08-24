@@ -41,10 +41,24 @@ export type Placement = "replace" | "add" | "beside";
 
 export const PLACEMENTS: Placement[] = ["replace", "add", "beside"];
 
+/**
+ * Whether the reply wants the canvas touched at all.
+ *
+ * Automatic turns (the assistant noticing the user paused) used to command a
+ * response, so the model drew something every time — even when the user was
+ * merely rearranging their own work. Giving the model an explicit "wait" lets
+ * it decline; absent or unknown values mean "draw", which keeps older replies
+ * and tests working unchanged.
+ */
+export type IntentAction = "draw" | "wait";
+
+export const INTENT_ACTIONS: IntentAction[] = ["draw", "wait"];
+
 export interface IntentEnvelope {
   title: string;
   summary: string;
   placement: Placement;
+  action: IntentAction;
 }
 
 export type DrawingIntent = IntentEnvelope &
@@ -85,10 +99,15 @@ export const parseDrawingIntent = (
       ? "replace"
       : "add";
 
+  const action: IntentAction = INTENT_ACTIONS.includes(raw.action as IntentAction)
+    ? (raw.action as IntentAction)
+    : "draw";
+
   const envelope: IntentEnvelope = {
     title: asString(raw.title).trim().slice(0, 80),
     summary: asString(raw.summary).trim().slice(0, 400),
     placement,
+    action,
   };
 
   const declared = INTENT_KINDS.includes(raw.kind as IntentKind)

@@ -107,6 +107,32 @@ describe("parseDrawingIntent", () => {
     ).toBe("add");
   });
 
+  it("defaults to drawing when action is missing or unknown", () => {
+    const base = {
+      kind: "grid" as const,
+      title: "T",
+      summary: "S",
+      grid: { rows: 2, columns: 2, style: "board", headerRow: false, cells: [] },
+    };
+
+    expect(parseDrawingIntent(base)?.action).toBe("draw");
+    expect(parseDrawingIntent({ ...base, action: "sideways" })?.action).toBe(
+      "draw",
+    );
+  });
+
+  it("reads action 'wait' as a decline to draw", () => {
+    const intent = parseDrawingIntent({
+      kind: "grid",
+      title: "T",
+      summary: "S",
+      action: "wait",
+      grid: { rows: 2, columns: 2, style: "board", headerRow: false, cells: [] },
+    });
+
+    expect(intent?.action).toBe("wait");
+  });
+
   it("reads the older replaceCanvas spelling as a replacement", () => {
     const intent = parseDrawingIntent({
       kind: "grid",

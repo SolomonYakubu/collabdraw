@@ -1,11 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
+
 import {
-  GoogleGenerativeAI,
-  HarmBlockThreshold,
-  HarmCategory,
-  SchemaType,
-  type ResponseSchema,
-} from "@google/generative-ai";
+  CONFIG_ERROR_MESSAGE,
+  completeDrawing,
+  resolveProvider,
+  streamDrawing,
+  type HistoryTurn as ModelHistoryTurn,
+  type ModelCall,
+} from "../../services/ai/llm";
 
 import {
   MAX_EDGES,
@@ -42,83 +44,83 @@ import {
  *  - `grid`    — rows and columns: boards, tables, calendars, matrices.
  *  - `scene`   — free placement on a normalised 0-100 canvas.
  *
- * The first version only had `diagram`, which meant every request came back as a
- * block diagram: asking for a tic-tac-toe board produced boxes with arrows
- * between them. Adding kinds fixes that without giving up what made the diagram
- * path reliable — the model is still never asked for absolute pixel coordinates,
- * and `responseSchema` still guarantees the reply parses, so there is no JSON to
- * repair and no bad geometry to rescue afterwards.
+ * The model itself is whatever the environment points at — Gemini, OpenAI,
+ * OpenRouter or any OpenAI-compatible host. The route only states the prompt
+ * and the reply shape; `services/ai/llm.ts` owns how a completion is actually
+ * sent and received.
  */
 
-const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-3.6-flash";
-const API_KEY = process.env.GEMINI_API_KEY;
-
-/** Enforced reply shape: an envelope plus one payload per kind of drawing. */
-const RESPONSE_SCHEMA: ResponseSchema = {
-  type: SchemaType.OBJECT,
+/** Enforced reply shape: an envelope plus one payload per kind of drawing.
+ *
+ * Written in plain JSON Schema and converted per transport, so adding a
+ * provider never means restating it.
+ */
+const RESPONSE_SCHEMA: Record<string, unknown> = {
+  type: "object",
   properties: {
     kind: {
-      type: SchemaType.STRING,
-      format: "enum",
-      enum: INTENT_KINDS as unknown as string[],
+      type: "string",
+      enum: INTENT_KINDS,
       description:
         "Which payload you filled in. 'sequence' for an ordered exchange between participants over time — most \"how does X work\" questions; 'scene' for a picture of something or a spatial layout; 'grid' for rows and columns (boards, tables, calendars, matrices); 'diagram' for abstract things joined by arrows, with no time axis and no picture.",
     },
     title: {
-      type: SchemaType.STRING,
+      type: "string",
       description: "A short name for the drawing.",
     },
     summary: {
-      type: SchemaType.STRING,
+      type: "string",
       description:
         "One or two sentences for the user describing what you produced or changed.",
     },
     placement: {
-      type: SchemaType.STRING,
-      format: "enum",
-      enum: PLACEMENTS as unknown as string[],
+      type: "string",
+      enum: PLACEMENTS,
       description:
         "Where your output goes. 'add' extends what is on the canvas — the usual case when you are adding to or continuing an existing drawing. 'replace' clears the canvas first; use it when the user asks to start over, or when you are producing a different rendering of the same thing so the old one should not remain. 'beside' keeps the canvas and puts your output in clear space next to it, for a separate drawing that should stand alongside.",
     },
+    action: {
+      type: "string",
+      enum: ["draw", "wait"],
+      description:
+        "Whether to touch the canvas at all. 'wait' when nothing you could draw would help right now — the user is still arranging their own work, asked a question about what is there, or any drawing would interrupt them. With 'wait' your summary is still shown, but nothing is drawn. Default 'draw'.",
+    },
 
     diagram: {
-      type: SchemaType.OBJECT,
+      type: "object",
       description:
         "Fill this only when kind is 'diagram': things connected to other things.",
       properties: {
         direction: {
-          type: SchemaType.STRING,
-          format: "enum",
+          type: "string",
           enum: ["down", "right"],
           description:
             "'down' for processes and hierarchies, 'right' for pipelines and request flows.",
         },
         nodes: {
-          type: SchemaType.ARRAY,
+          type: "array",
           description: `The boxes. At most ${MAX_NODES}.`,
           items: {
-            type: SchemaType.OBJECT,
+            type: "object",
             properties: {
               id: {
-                type: SchemaType.STRING,
+                type: "string",
                 description:
                   "Short identifier referenced by edges. Reuse an existing node's exact label to attach to it.",
               },
               label: {
-                type: SchemaType.STRING,
+                type: "string",
                 description: `Text in the box, under ${MAX_LABEL_LENGTH} characters.`,
               },
               shape: {
-                type: SchemaType.STRING,
-                format: "enum",
-                enum: NODE_SHAPES as unknown as string[],
+                type: "string",
+                enum: NODE_SHAPES,
                 description:
                   "'rectangle' for a step or component, 'diamond' for a decision, 'ellipse' for a start or end point.",
               },
               accent: {
-                type: SchemaType.STRING,
-                format: "enum",
-                enum: NODE_ACCENTS as unknown as string[],
+                type: "string",
+                enum: NODE_ACCENTS,
                 description:
                   "Background colour; 'none' leaves the box unfilled.",
               },
@@ -127,19 +129,19 @@ const RESPONSE_SCHEMA: ResponseSchema = {
           },
         },
         edges: {
-          type: SchemaType.ARRAY,
+          type: "array",
           description: `Connections between nodes. At most ${MAX_EDGES}.`,
           items: {
-            type: SchemaType.OBJECT,
+            type: "object",
             properties: {
-              from: { type: SchemaType.STRING, description: "Source node id." },
-              to: { type: SchemaType.STRING, description: "Target node id." },
+              from: { type: "string", description: "Source node id." },
+              to: { type: "string", description: "Target node id." },
               label: {
-                type: SchemaType.STRING,
+                type: "string",
                 description: "Short text such as 'yes' or 'no'; empty if none.",
               },
               dashed: {
-                type: SchemaType.BOOLEAN,
+                type: "boolean",
                 description: "True for optional or asynchronous relationships.",
               },
             },
@@ -147,14 +149,14 @@ const RESPONSE_SCHEMA: ResponseSchema = {
           },
         },
         removedEdges: {
-          type: SchemaType.ARRAY,
+          type: "array",
           description:
             "Existing connections to delete. Needed when inserting a node between two already-connected ones. Empty array otherwise.",
           items: {
-            type: SchemaType.OBJECT,
+            type: "object",
             properties: {
-              from: { type: SchemaType.STRING },
-              to: { type: SchemaType.STRING },
+              from: { type: "string" },
+              to: { type: "string" },
             },
             required: ["from", "to"],
           },
@@ -164,52 +166,50 @@ const RESPONSE_SCHEMA: ResponseSchema = {
     },
 
     grid: {
-      type: SchemaType.OBJECT,
+      type: "object",
       description:
         "Fill this only when kind is 'grid': anything arranged in rows and columns. The application draws perfectly even cells, so give only counts and contents.",
       properties: {
         rows: {
-          type: SchemaType.INTEGER,
+          type: "integer",
           description: `Number of rows, 1 to ${MAX_GRID_SIDE}.`,
         },
         columns: {
-          type: SchemaType.INTEGER,
+          type: "integer",
           description: `Number of columns, 1 to ${MAX_GRID_SIDE}.`,
         },
         style: {
-          type: SchemaType.STRING,
-          format: "enum",
+          type: "string",
           enum: ["board", "table"],
           description:
             "'board' draws only the lines between cells, which is what a tic-tac-toe or noughts-and-crosses grid looks like. 'table' outlines every cell.",
         },
         headerRow: {
-          type: SchemaType.BOOLEAN,
+          type: "boolean",
           description: "Shade the first row, for a table with column headings.",
         },
         cells: {
-          type: SchemaType.ARRAY,
+          type: "array",
           description:
             "Only the cells that have content. Leave the array empty for a blank grid.",
           items: {
-            type: SchemaType.OBJECT,
+            type: "object",
             properties: {
               row: {
-                type: SchemaType.INTEGER,
+                type: "integer",
                 description: "0-based row index.",
               },
               column: {
-                type: SchemaType.INTEGER,
+                type: "integer",
                 description: "0-based column index.",
               },
               text: {
-                type: SchemaType.STRING,
+                type: "string",
                 description: "Cell contents, e.g. 'X', 'O', or a short label.",
               },
               accent: {
-                type: SchemaType.STRING,
-                format: "enum",
-                enum: NODE_ACCENTS as unknown as string[],
+                type: "string",
+                enum: NODE_ACCENTS,
                 description: "Cell colour; 'none' for plain.",
               },
             },
@@ -221,29 +221,28 @@ const RESPONSE_SCHEMA: ResponseSchema = {
     },
 
     sequence: {
-      type: SchemaType.OBJECT,
+      type: "object",
       description:
         "Fill this only when kind is 'sequence': who does what, in order, over time. Lifelines, spacing and label placement are computed for you — give only the participants and the ordered messages.",
       properties: {
         participants: {
-          type: SchemaType.ARRAY,
+          type: "array",
           description: `The actors, left to right in the order they first take part. Two to ${MAX_PARTICIPANTS}.`,
           items: {
-            type: SchemaType.OBJECT,
+            type: "object",
             properties: {
               id: {
-                type: SchemaType.STRING,
+                type: "string",
                 description: "Short identifier referenced by messages.",
               },
               label: {
-                type: SchemaType.STRING,
+                type: "string",
                 description:
                   "Name shown at the top, e.g. 'Client', 'API', 'Database'. Keep it short.",
               },
               accent: {
-                type: SchemaType.STRING,
-                format: "enum",
-                enum: NODE_ACCENTS as unknown as string[],
+                type: "string",
+                enum: NODE_ACCENTS,
                 description: "Header colour; 'none' for plain.",
               },
             },
@@ -251,30 +250,30 @@ const RESPONSE_SCHEMA: ResponseSchema = {
           },
         },
         messages: {
-          type: SchemaType.ARRAY,
+          type: "array",
           description: `The exchanges, in the order they happen. At most ${MAX_MESSAGES}.`,
           items: {
-            type: SchemaType.OBJECT,
+            type: "object",
             properties: {
-              from: { type: SchemaType.STRING, description: "Sender's id." },
+              from: { type: "string", description: "Sender's id." },
               to: {
-                type: SchemaType.STRING,
-                description: "Recipient's id. The same as 'from' for a self-call.",
+                type: "string",
+                description:
+                  "Recipient's id. The same as 'from' for a self-call.",
               },
               label: {
-                type: SchemaType.STRING,
+                type: "string",
                 description:
                   "What is sent, e.g. 'POST /pay (key: 123)' or '200 OK'. Short.",
               },
               kind: {
-                type: SchemaType.STRING,
-                format: "enum",
-                enum: MESSAGE_KINDS as unknown as string[],
+                type: "string",
+                enum: MESSAGE_KINDS,
                 description:
                   "'call' for a request (solid), 'return' for what comes back (dashed), 'self' for work a participant does on its own.",
               },
               section: {
-                type: SchemaType.STRING,
+                type: "string",
                 description:
                   "Starts a labelled phase at this message, e.g. 'First attempt' or 'Duplicate retry'. Empty string for most messages.",
               },
@@ -287,68 +286,66 @@ const RESPONSE_SCHEMA: ResponseSchema = {
     },
 
     scene: {
-      type: SchemaType.OBJECT,
+      type: "object",
       description:
         "Fill this only when kind is 'scene': any other picture or layout. Positions are on a 0-100 square canvas, NOT pixels. 0,0 is top-left; 100,100 is bottom-right.",
       properties: {
         items: {
-          type: SchemaType.ARRAY,
+          type: "array",
           description: `The shapes making up the picture. At most ${MAX_SCENE_ITEMS}. Order matters: later items draw on top.`,
           items: {
-            type: SchemaType.OBJECT,
+            type: "object",
             properties: {
               shape: {
-                type: SchemaType.STRING,
-                format: "enum",
-                enum: SCENE_SHAPES as unknown as string[],
+                type: "string",
+                enum: SCENE_SHAPES,
                 description: "Which primitive to draw.",
               },
               x: {
-                type: SchemaType.NUMBER,
+                type: "number",
                 description:
                   "Left edge, 0-100. For a line or arrow, the start point's x.",
               },
               y: {
-                type: SchemaType.NUMBER,
+                type: "number",
                 description:
                   "Top edge, 0-100. For a line or arrow, the start point's y.",
               },
               width: {
-                type: SchemaType.NUMBER,
+                type: "number",
                 description:
                   "Width, 0-100. For text, ignored. For a line or arrow, ignored.",
               },
               height: {
-                type: SchemaType.NUMBER,
+                type: "number",
                 description:
                   "Height, 0-100. For text this sets the font size, so use about 4 for body text and 8 or more for a heading.",
               },
               x2: {
-                type: SchemaType.NUMBER,
+                type: "number",
                 description: "End point x for a line or arrow, 0-100. Else 0.",
               },
               y2: {
-                type: SchemaType.NUMBER,
+                type: "number",
                 description: "End point y for a line or arrow, 0-100. Else 0.",
               },
               text: {
-                type: SchemaType.STRING,
+                type: "string",
                 description:
                   "For 'text', the words to draw. For a shape, an optional centred label. Empty otherwise.",
               },
               accent: {
-                type: SchemaType.STRING,
-                format: "enum",
-                enum: NODE_ACCENTS as unknown as string[],
+                type: "string",
+                enum: NODE_ACCENTS,
                 description: "Colour; 'none' draws in the default ink.",
               },
               filled: {
-                type: SchemaType.BOOLEAN,
+                type: "boolean",
                 description:
                   "True to fill the shape with its accent colour rather than leaving it as an outline.",
               },
               rotation: {
-                type: SchemaType.NUMBER,
+                type: "number",
                 description:
                   "Clockwise rotation in degrees about the shape's own centre, 0-359. Use 0 unless the thing really is tilted — a roof strut, a leaning ladder, a rotated label, a clock hand. Lines and arrows do not need it; give them the ends you want instead.",
               },
@@ -372,7 +369,7 @@ const RESPONSE_SCHEMA: ResponseSchema = {
       required: ["items"],
     },
   },
-  required: ["kind", "title", "summary", "placement"],
+  required: ["kind", "title", "summary", "placement", "action"],
 };
 
 const SYSTEM_INSTRUCTION = `You draw on a whiteboard by describing what to draw.
@@ -467,6 +464,22 @@ General:
   picture, and do not add commentary boxes.
 - Keep text short everywhere. Long strings make big shapes and crowded drawings.
 
+WHEN NOT TO DRAW (action "wait")
+Some requests arrive while the user is mid-thought, or are not drawing requests
+at all. Before answering, ask: would what I am about to draw be an improvement
+to THIS canvas, or just activity? Choose "wait" when:
+- The user is clearly still working — the request is vague ("hmm", "ok", "wait"),
+  or describes something half-finished they are likely still arranging.
+- They asked a QUESTION about the canvas rather than for a change: "what have I
+  drawn?", "is this right?", "what is missing?" Answer in your summary; draw
+  nothing.
+- Anything you could add would sit on top of work they have not finished.
+- You would only be repeating, re-labelling or slightly moving what is already
+  there without being asked.
+When you wait, say briefly and usefully why in "summary" — that is still shown.
+Choose "draw" whenever the user asked for something concrete, even if it is
+small; hesitation must never turn a real request into silence.
+
 CONTINUING WHAT IS ALREADY THERE
 Before each request you are given the canvas twice: as a picture, and as a
 structured description. Look at the picture to understand what has been drawn —
@@ -479,17 +492,7 @@ description for the exact coordinates and names to build on.
 - If canvas items are listed in 0-100 coordinates and you are adding to that
   drawing, reply with "scene" in those same coordinates and list only what is NEW.
 - If diagram nodes are listed, reply with "diagram", list only new nodes, and
-  refer to existing ones in edges by their exact existing label.`
-
-const SAFETY_SETTINGS = [
-  HarmCategory.HARM_CATEGORY_HARASSMENT,
-  HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-  HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-  HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-].map((category) => ({
-  category,
-  threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
-}));
+  refer to existing ones in edges by their exact existing label.`;
 
 interface RequestBody {
   prompt?: unknown;
@@ -497,6 +500,12 @@ interface RequestBody {
   /** A data URL snapshot of the canvas. */
   image?: unknown;
   history?: unknown;
+  /**
+   * When true the reply streams back as raw JSON text as the model writes it,
+   * so the client can draw a scene shape by shape. Validation then happens on
+   * the client. When absent the reply comes back parsed as `{ intent }`.
+   */
+  stream?: unknown;
 }
 
 /**
@@ -505,10 +514,14 @@ interface RequestBody {
  */
 const MAX_IMAGE_BASE64 = 4_000_000;
 
-const SUPPORTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+]);
 
 /**
- * Pull a Gemini inline image part out of a data URL.
+ * Pull an inline image part out of a data URL.
  *
  * A description cannot convey a freehand sketch, so the canvas is also sent as a
  * picture; anything malformed or oversized is simply dropped rather than failing
@@ -546,12 +559,12 @@ interface HistoryTurn {
 /** Keep the transcript short; the canvas graph already carries the state. */
 const MAX_HISTORY_TURNS = 8;
 
-const parseHistory = (input: unknown): HistoryTurn[] => {
+const parseHistory = (input: unknown): ModelHistoryTurn[] => {
   if (!Array.isArray(input)) {
     return [];
   }
 
-  const turns: HistoryTurn[] = [];
+  const turns: ModelHistoryTurn[] = [];
 
   for (const candidate of input) {
     if (!candidate || typeof candidate !== "object") {
@@ -559,7 +572,8 @@ const parseHistory = (input: unknown): HistoryTurn[] => {
     }
 
     const turn = candidate as { role?: unknown; parts?: unknown };
-    const role = turn.role === "model" ? "model" : "user";
+    const role: ModelHistoryTurn["role"] =
+      turn.role === "model" ? "model" : "user";
     const parts = Array.isArray(turn.parts) ? turn.parts : [];
     const text = parts
       .map((part) =>
@@ -573,11 +587,12 @@ const parseHistory = (input: unknown): HistoryTurn[] => {
       .join("\n");
 
     if (text) {
-      turns.push({ role, parts: [{ text: text.slice(0, 2000) }] });
+      turns.push({ role, text: text.slice(0, 2000) });
     }
   }
 
-  // Gemini requires the transcript to begin with a user turn.
+  // Gemini requires the transcript to begin with a user turn; harmless for the
+  // OpenAI-compatible path, so one rule serves both.
   const trimmed = turns.slice(-MAX_HISTORY_TURNS);
   while (trimmed.length > 0 && trimmed[0].role !== "user") {
     trimmed.shift();
@@ -611,9 +626,11 @@ const parseScene = (input: unknown): SceneSummary => {
 };
 
 export async function POST(request: NextRequest) {
-  if (!API_KEY) {
+  const provider = resolveProvider();
+
+  if (!provider) {
     return NextResponse.json(
-      { error: "The AI assistant is not configured: GEMINI_API_KEY is unset." },
+      { error: CONFIG_ERROR_MESSAGE },
       { status: 503 },
     );
   }
@@ -641,39 +658,50 @@ export async function POST(request: NextRequest) {
   const scene = parseScene(body.scene);
   const history = parseHistory(body.history);
   const image = parseInlineImage(body.image);
+  const wantsStream = body.stream === true;
 
   try {
-    const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({
-      model: MODEL_NAME,
-      systemInstruction: SYSTEM_INSTRUCTION,
-      safetySettings: SAFETY_SETTINGS,
-      generationConfig: {
-        // Structured output: the reply is JSON matching RESPONSE_SCHEMA.
-        responseMimeType: "application/json",
-        responseSchema: RESPONSE_SCHEMA,
-        // Diagram structure should be reproducible, not creative.
-        temperature: 0.2,
-        maxOutputTokens: 8192,
-      },
+    const call: ModelCall = {
+      system: SYSTEM_INSTRUCTION,
+      history,
+      userText: [
+        image
+          ? "The attached image shows the canvas as it looks right now."
+          : null,
+        `Current canvas:\n${formatSceneForPrompt(scene)}`,
+        `Request: ${prompt}`,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      image,
+    };
+
+    /*
+     * Streaming path: hand the model's JSON back verbatim as it is written, so
+     * the client can render a scene item by item. It is a single JSON document,
+     * not SSE — the client accumulates and parses it. Parsing and validation
+     * move to the client, which already owns the builders.
+     */
+    if (wantsStream) {
+      const stream = await streamDrawing(provider, call, {
+        schema: RESPONSE_SCHEMA,
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+          // Ask intermediaries not to buffer, so deltas arrive as they are sent.
+          "X-Accel-Buffering": "no",
+        },
+      });
+    }
+
+    const reply = await completeDrawing(provider, call, {
+      schema: RESPONSE_SCHEMA,
     });
 
-    const text = [
-      image
-        ? "The attached image shows the canvas as it looks right now."
-        : null,
-      `Current canvas:\n${formatSceneForPrompt(scene)}`,
-      `Request: ${prompt}`,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
-
-    const result = await model
-      .startChat({ history })
-      .sendMessage(
-        image ? [{ text }, { inlineData: image }] : text,
-      );
-
-    const reply = result.response.text();
     let parsed: unknown;
 
     try {
@@ -681,12 +709,10 @@ export async function POST(request: NextRequest) {
     } catch {
       // With a response schema this should not happen; a blocked or truncated
       // reply is the realistic cause.
-      const reason = result.response.promptFeedback?.blockReason;
       return NextResponse.json(
         {
-          error: reason
-            ? `The request was blocked (${reason}).`
-            : "The assistant returned an unreadable reply. Please try again.",
+          error:
+            "The assistant returned an unreadable reply. Please try again.",
         },
         { status: 502 },
       );

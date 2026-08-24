@@ -83,6 +83,71 @@ const asAccent = (value: unknown): NodeAccent =>
     : "none";
 
 /**
+ * Validate one scene item. Returns `null` when it is not drawable, so both the
+ * whole-spec parse and the streaming path (which sees one item at a time) can
+ * share exactly the same rules — a streamed item is accepted only if the final
+ * parse would accept it too.
+ */
+export const parseSceneItem = (candidate: unknown): SceneItem | null => {
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+
+  const item = candidate as Record<string, unknown>;
+  const shape = asShape(item.shape);
+
+  if (!shape) {
+    return null;
+  }
+
+  const text = String(item.text ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+
+  // A text item with nothing to say is not worth placing.
+  if (shape === "text" && !text) {
+    return null;
+  }
+
+  const x = clamp01to100(item.x, 0);
+  const y = clamp01to100(item.y, 0);
+  const isLinear = shape === "line" || shape === "arrow";
+
+  const width = isLinear
+    ? 0
+    : Math.max(MIN_EXTENT, clamp01to100(item.width, 10));
+  const height = isLinear
+    ? 0
+    : Math.max(MIN_EXTENT, clamp01to100(item.height, 10));
+
+  // A line needs a distinct end point; default to a short horizontal run so a
+  // missing one does not collapse it to nothing.
+  const x2 = isLinear ? clamp01to100(item.x2, Math.min(100, x + 10)) : 0;
+  const y2 = isLinear ? clamp01to100(item.y2, y) : 0;
+
+  if (isLinear && Math.abs(x2 - x) < 0.01 && Math.abs(y2 - y) < 0.01) {
+    return null;
+  }
+
+  // Rotation is wrapped rather than clamped: -90 and 270 mean the same thing.
+  const rotationValue = asNumber(item.rotation);
+  const rotation =
+    rotationValue === null ? 0 : ((rotationValue % 360) + 360) % 360;
+
+  return {
+    shape,
+    x,
+    y,
+    width,
+    height,
+    x2,
+    y2,
+    text,
+    accent: asAccent(item.accent),
+    filled: item.filled === true,
+    rotation,
+  };
+};
+
+/**
  * Validate a scene. Returns `null` when nothing usable is present, so the caller
  * can fall back to another intent.
  */
@@ -97,62 +162,14 @@ export const parseSceneSpec = (input: unknown): SceneSpec | null => {
   const items: SceneItem[] = [];
 
   for (const candidate of rawItems) {
-    if (items.length >= MAX_SCENE_ITEMS || !candidate || typeof candidate !== "object") {
-      continue;
+    if (items.length >= MAX_SCENE_ITEMS) {
+      break;
     }
 
-    const item = candidate as Record<string, unknown>;
-    const shape = asShape(item.shape);
-
-    if (!shape) {
-      continue;
+    const item = parseSceneItem(candidate);
+    if (item) {
+      items.push(item);
     }
-
-    const text = String(item.text ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
-
-    // A text item with nothing to say is not worth placing.
-    if (shape === "text" && !text) {
-      continue;
-    }
-
-    const x = clamp01to100(item.x, 0);
-    const y = clamp01to100(item.y, 0);
-    const isLinear = shape === "line" || shape === "arrow";
-
-    const width = isLinear
-      ? 0
-      : Math.max(MIN_EXTENT, clamp01to100(item.width, 10));
-    const height = isLinear
-      ? 0
-      : Math.max(MIN_EXTENT, clamp01to100(item.height, 10));
-
-    // A line needs a distinct end point; default to a short horizontal run so a
-    // missing one does not collapse it to nothing.
-    const x2 = isLinear ? clamp01to100(item.x2, Math.min(100, x + 10)) : 0;
-    const y2 = isLinear ? clamp01to100(item.y2, y) : 0;
-
-    if (isLinear && Math.abs(x2 - x) < 0.01 && Math.abs(y2 - y) < 0.01) {
-      continue;
-    }
-
-    // Rotation is wrapped rather than clamped: -90 and 270 mean the same thing.
-    const rotationValue = asNumber(item.rotation);
-    const rotation =
-      rotationValue === null ? 0 : ((rotationValue % 360) + 360) % 360;
-
-    items.push({
-      shape,
-      x,
-      y,
-      width,
-      height,
-      x2,
-      y2,
-      text,
-      accent: asAccent(item.accent),
-      filled: item.filled === true,
-      rotation,
-    });
   }
 
   return items.length > 0 ? { items } : null;

@@ -14,8 +14,15 @@ import type { BoundingBox, ElementStyle, Shape } from "../../types/shapes";
 import { getElementBounds } from "../../services/canvas/elements";
 import { exportSceneToDataURL } from "../../services/canvas/renderer";
 import { describeScene } from "../../services/ai/describeScene";
-import { buildFromIntent } from "../../services/ai/build";
-import { parseDrawingIntent } from "../../services/ai/intent";
+import {
+  buildFromIntent,
+  placeSceneItem,
+  sceneFrame,
+  type SceneFrame,
+} from "../../services/ai/build";
+import { MAX_SCENE_ITEMS, parseSceneItem } from "../../services/ai/scene";
+import { readStringField, scanArray } from "../../services/ai/streamParse";
+import { parseDrawingIntent, type DrawingIntent } from "../../services/ai/intent";
 import type { ApplyOptions, ElementsUpdater } from "./useScene";
 
 export interface AIChatEntry {
@@ -34,16 +41,6 @@ const STORAGE_PREFIX = "collabdraw_ai_history:";
 const PLACEMENT_GAP = 120;
 
 /**
- * Longest side of the canvas snapshot sent with each request.
- *
- * A written description cannot convey a freehand sketch — "freehand at (0,86)
- * size 17x14" says nothing about what was drawn. The model is multimodal, so it
- * gets a picture of the canvas alongside the structured description and can see
- * for itself. Bounded so the request stays small.
- */
-const SNAPSHOT_MAX_DIMENSION = 896;
-
-/**
  * Delay between batches while the drawing appears.
  *
  * The reply arrives complete — with a response schema there is no partial JSON
@@ -53,8 +50,37 @@ const SNAPSHOT_MAX_DIMENSION = 896;
  */
 const REVEAL_STEP_MS = 45;
 
-/** How long the canvas must be still before an automatic turn fires. */
-const AUTO_RESPOND_DELAY_MS = 1200;
+/**
+ * Longest side of the canvas snapshot sent with each request.
+ *
+ * A written description cannot convey a freehand sketch — "freehand at (0,86)
+ * size 17x14" says nothing about what was drawn. The model is multimodal, so
+ * when there is drawing on the canvas it also gets a picture, alongside the
+ * structured description. Bounded so the request stays small.
+ */
+const SNAPSHOT_MAX_DIMENSION = 896;
+
+/**
+ * When a snapshot is worth its tokens.
+ *
+ * The structured scene description already covers shapes, text and layout, so a
+ * picture of those is redundant spend on every turn. Freehand strokes are the
+ * one thing the description genuinely cannot convey — "freehand at (0,86) size
+ * 17x14" is noise — so an image rides along only when such strokes exist.
+ */
+const SNAPSHOT_TOOLS = new Set(["Freehand"]);
+
+/** JPEG quality for the snapshot; drawings tolerate mild loss well. */
+const SNAPSHOT_JPEG_QUALITY = 0.7;
+
+/**
+ * How long the canvas must be still before an automatic turn fires.
+ *
+ * Deliberately generous: this fires when the user has *stopped working*, not
+ * merely paused between strokes. A second is mid-drawing; three seconds of no
+ * element changes reads as done.
+ */
+const AUTO_RESPOND_DELAY_MS = 3000;
 
 /** Grace period after the assistant writes, so its own edits never retrigger. */
 const AI_WRITE_SETTLE_MS = 400;
@@ -114,6 +140,8 @@ const unionBounds = (elements: readonly Shape[]): BoundingBox | null => {
 export interface UseAIAssistantProps {
   elementsRef: React.MutableRefObject<Shape[]>;
   applyElements: (updater: ElementsUpdater, options?: ApplyOptions) => Shape[];
+  /** Commits the current elements as one undo step, after a streamed drawing. */
+  commit: (elements?: Shape[]) => void;
   style: ElementStyle;
   roomId: string | null;
   /** Where to place a diagram when the canvas is empty. */
@@ -141,6 +169,7 @@ export interface AIAssistant {
 export const useAIAssistant = ({
   elementsRef,
   applyElements,
+  commit,
   style,
   roomId,
   getViewportCenter,
@@ -150,7 +179,7 @@ export const useAIAssistant = ({
   const [history, setHistory] = useState<AIChatEntry[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [autoRespond, setAutoRespond] = useState(false);
+  const [autoRespond, setAutoRespond] = useState(true);
 
   const storageKey = useMemo(() => storageKeyFor(roomId), [roomId]);
   const historyLoadedRef = useRef(false);
@@ -231,76 +260,82 @@ export const useAIAssistant = ({
     ];
 
     const sceneForRequest = describeScene(elementsRef.current);
+    const knownIds = new Set(sceneForRequest.nodes.map((node) => node.id));
 
-    // A picture of the canvas, so the model can see what a description cannot.
+    // A picture of the canvas, but only when words fall short: freehand strokes
+    // are the one thing the structured description cannot convey. Everything
+    // else (shapes, text, layout) is already in `sceneForRequest`, so skipping
+    // the image there saves its base64 payload on most turns.
     let snapshot: string | null = null;
-    try {
-      snapshot = exportSceneToDataURL(elementsRef.current, {
-        maxDimension: SNAPSHOT_MAX_DIMENSION,
-        scale: 1.5,
-      });
-    } catch {
-      // Rendering the snapshot must never block the request.
-      snapshot = null;
+    const hasDrawnMarks = elementsRef.current.some(
+      (element) => !element.isDeleted && SNAPSHOT_TOOLS.has(element.tool),
+    );
+
+    if (hasDrawnMarks) {
+      try {
+        snapshot = exportSceneToDataURL(elementsRef.current, {
+          maxDimension: SNAPSHOT_MAX_DIMENSION,
+          scale: 1.5,
+          format: "jpeg",
+          quality: SNAPSHOT_JPEG_QUALITY,
+        });
+      } catch {
+        // Rendering the snapshot must never block the request.
+        snapshot = null;
+      }
     }
 
-    try {
-      const response = await fetch("/api/generate-drawing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          prompt: submitted,
-          // The canvas travels as the structure it represents, plus a picture.
-          scene: sceneForRequest,
-          image: snapshot,
-          history: nextHistory,
-        }),
+    // Everything on the canvas before this turn, kept so a failed or diverged
+    // stream can be rolled back cleanly.
+    const baseElements = elementsRef.current;
+    const stale = () =>
+      requestSeqRef.current !== sequence || !mountedRef.current;
+
+    /** Put the canvas back the way it was before an incremental scene began. */
+    const restoreBase = () => {
+      applyElements(() => baseElements, {
+        commit: false,
+        broadcast: "full",
       });
+    };
 
-      const data = await response.json().catch(() => null);
+    /** The world box a streamed scene maps into, matching the whole-spec build. */
+    const streamSceneFrame = (placement: string): SceneFrame => {
+      const existing = placement === "replace" ? [] : baseElements;
+      const occupied = unionBounds(existing);
+      const anchorBox = placement === "add" && occupied ? occupied : null;
+      const origin = occupied
+        ? { x: occupied.x, y: occupied.y + occupied.height + PLACEMENT_GAP }
+        : (() => {
+            const center = centerRef.current();
+            return { x: center.x - 300, y: center.y - 220 };
+          })();
+      return sceneFrame(origin, anchorBox);
+    };
 
-      if (!response.ok) {
-        throw new Error(
-          (data && typeof data.error === "string" && data.error) ||
-            `Request failed with status ${response.status}`,
-        );
-      }
-
-      const intent = parseDrawingIntent(
-        data?.intent,
-        new Set(sceneForRequest.nodes.map((node) => node.id)),
-      );
-
-      if (!intent) {
-        throw new Error("The assistant returned nothing drawable.");
-      }
-
-      // A newer request (or unmount) happened while this one was in flight.
-      if (requestSeqRef.current !== sequence) {
-        return;
-      }
-
-      setHistory([
-        ...nextHistory,
+    /** Append one item's elements as they stream in (no commit yet). */
+    const appendStreamed = (built: Shape[], clearFirst: boolean) => {
+      applyElements(
+        (previous) => (clearFirst ? [...built] : [...previous, ...built]),
         {
-          role: "model",
-          parts: [{ text: intent.summary || intent.title || "Done." }],
+          commit: false,
+          // The clearing write is positional, so peers get the whole scene;
+          // later appends only carry the new elements.
+          broadcast: clearFirst ? "full" : "elements",
+          changedIds: built.map((element) => element.id),
         },
-      ]);
+      );
+    };
 
+    /**
+     * The path for everything that cannot render item by item — grids, diagrams,
+     * sequences, and any scene whose incremental parse diverged. Identical to the
+     * behaviour before streaming: build the whole thing, then reveal it in order.
+     */
+    const revealWhole = async (intent: DrawingIntent) => {
       const replacing = intent.placement === "replace";
       const existing = replacing ? [] : elementsRef.current;
       const occupied = unionBounds(existing);
-
-      /*
-       * Where the new content goes, driven by the model's stated placement.
-       *
-       * `add` continues what is there — a grid is written into the matching board
-       * in place, and a scene is mapped onto the area the drawing occupies so
-       * "finish this" lands on it. `beside` and `replace` both want clear space,
-       * which is what stops a fresh rendering being stacked on top of the old one.
-       */
       const continuing = intent.placement === "add";
 
       const anchorGrid =
@@ -327,29 +362,20 @@ export const useAIAssistant = ({
         throw new Error("The drawing came back empty.");
       }
 
-      if (requestSeqRef.current !== sequence || !mountedRef.current) {
+      if (stale()) {
         return;
       }
 
       const builtIds = new Set(built.elements.map((element) => element.id));
       const removedIds = new Set(built.removedIds);
 
-      /*
-       * Reveal in order rather than in one frame. The first batch is the one that
-       * clears or prunes; the last is the one that commits, so the whole drawing
-       * is a single undo step however many batches it took.
-       */
       aiWritingRef.current = true;
 
       const batchSize =
         built.elements.length > 30 ? 4 : built.elements.length > 12 ? 3 : 2;
 
-      for (
-        let offset = 0;
-        offset < built.elements.length;
-        offset += batchSize
-      ) {
-        if (requestSeqRef.current !== sequence || !mountedRef.current) {
+      for (let offset = 0; offset < built.elements.length; offset += batchSize) {
+        if (stale()) {
           return;
         }
 
@@ -374,7 +400,6 @@ export const useAIAssistant = ({
           },
           {
             commit: isLast,
-            // Replacing the canvas is positional, so peers need the whole scene.
             broadcast: replacing && isFirst ? "full" : "elements",
             changedIds: batch.map((element) => element.id),
             deletedIds: isFirst ? built.removedIds : [],
@@ -387,6 +412,201 @@ export const useAIAssistant = ({
       }
 
       placedRef.current?.(built.bounds);
+    };
+
+    // Incremental scene state, filled in as the stream arrives.
+    let didStreamScene = false;
+    let clearedForReplace = false;
+    let frame: SceneFrame | null = null;
+    let rawSeen = 0;
+    let builtItemCount = 0;
+    const streamedElements: Shape[] = [];
+
+    try {
+      const response = await fetch("/api/generate-drawing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          prompt: submitted,
+          // The canvas travels as the structure it represents; a picture only
+          // when there is drawing on it that the description cannot carry.
+          scene: sceneForRequest,
+          image: snapshot,
+          history: nextHistory,
+          stream: true,
+        }),
+      });
+
+      if (!response.ok) {
+        // Validation failures happen before streaming starts, so they still
+        // arrive as JSON.
+        const data = await response.json().catch(() => null);
+        throw new Error(
+          (data && typeof data.error === "string" && data.error) ||
+            `Request failed with status ${response.status}`,
+        );
+      }
+
+      if (!response.body) {
+        throw new Error("The assistant returned an empty response.");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let raw = "";
+      let kind: string | null = null;
+      let placement: string | null = null;
+
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+
+        // A newer request (or unmount) took over: stop touching the canvas.
+        if (stale()) {
+          await reader.cancel().catch(() => {});
+          return;
+        }
+
+        raw += decoder.decode(value, { stream: true });
+
+        if (!kind) {
+          kind = readStringField(raw, "kind");
+        }
+        if (!placement) {
+          placement = readStringField(raw, "placement");
+        }
+
+        /*
+         * Only scenes render as they stream. A grid's cell size depends on the
+         * widest cell across the whole board, and diagrams and sequences lay out
+         * globally — none can be placed one item at a time without later items
+         * shifting earlier ones, so they wait for the full reply and reveal then.
+         */
+        if (kind === "scene" && placement && !frame) {
+          frame = streamSceneFrame(placement);
+          didStreamScene = true;
+          aiWritingRef.current = true;
+        }
+
+        if (didStreamScene && frame && placement) {
+          const scan = scanArray(raw, "items");
+
+          for (const candidate of scan.objects.slice(rawSeen)) {
+            rawSeen += 1;
+
+            // Stop at the same ceiling the whole-spec parser uses, so the
+            // streamed set matches the authoritative one exactly.
+            if (builtItemCount >= MAX_SCENE_ITEMS) {
+              continue;
+            }
+
+            const item = parseSceneItem(candidate);
+            if (!item) {
+              continue;
+            }
+
+            const built = placeSceneItem(item, frame, styleRef.current);
+            if (built.length === 0) {
+              continue;
+            }
+
+            const clearFirst = !clearedForReplace && placement === "replace";
+            streamedElements.push(...built);
+            appendStreamed(built, clearFirst);
+            clearedForReplace = clearedForReplace || placement === "replace";
+            builtItemCount += 1;
+          }
+        }
+      }
+
+      raw += decoder.decode();
+
+      if (stale()) {
+        return;
+      }
+
+      // The authoritative result is the full-text parse under the response
+      // schema. Streaming was a preview; this is what gets confirmed.
+      let parsed: unknown = null;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = null;
+      }
+
+      const intent = parsed ? parseDrawingIntent(parsed, knownIds) : null;
+
+      if (!intent) {
+        if (didStreamScene) {
+          restoreBase();
+        }
+        throw new Error("The assistant returned nothing drawable.");
+      }
+
+      if (stale()) {
+        return;
+      }
+
+      /*
+       * The model can decline to draw ("wait"): the automatic turn used to make
+       * it respond to every pause, so it added shapes while the user was still
+       * arranging their own work. A wait rolls back any streamed preview and
+       * records only its words.
+       */
+      if (intent.action === "wait") {
+        if (didStreamScene) {
+          restoreBase();
+        }
+        setHistory([
+          ...nextHistory,
+          {
+            role: "model",
+            parts: [{ text: intent.summary || intent.title || "(waiting)" }],
+          },
+        ]);
+        setPrompt("");
+        return;
+      }
+
+      setHistory([
+        ...nextHistory,
+        {
+          role: "model",
+          parts: [{ text: intent.summary || intent.title || "Done." }],
+        },
+      ]);
+
+      /*
+       * The streamed scene was built with the same validator, frame and builders
+       * as the authoritative one and in the same order, so when the item counts
+       * agree the two are identical but for ids and seeds. Keep what is already
+       * on the canvas and commit it as a single undo step — no rebuild, no flash.
+       */
+      if (
+        didStreamScene &&
+        intent.kind === "scene" &&
+        builtItemCount === intent.scene.items.length &&
+        streamedElements.length > 0
+      ) {
+        commit();
+        const bounds = unionBounds(streamedElements);
+        if (bounds) {
+          placedRef.current?.(bounds);
+        }
+        setPrompt("");
+        return;
+      }
+
+      // Fallback: a kind that does not stream, or a scene that diverged. Undo any
+      // partial scene first, then reveal the authoritative build as before.
+      if (didStreamScene) {
+        restoreBase();
+      }
+
+      await revealWhole(intent);
       setPrompt("");
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === "AbortError") {
@@ -394,6 +614,10 @@ export const useAIAssistant = ({
       }
       if (requestSeqRef.current !== sequence) {
         return;
+      }
+      // Never leave a half-drawn, uncommitted scene behind.
+      if (didStreamScene) {
+        restoreBase();
       }
       setError(caught instanceof Error ? caught.message : "Unknown error");
     } finally {
@@ -407,7 +631,7 @@ export const useAIAssistant = ({
       }, AI_WRITE_SETTLE_MS);
     }
     },
-    [applyElements, elementsRef, history, isGenerating, prompt],
+    [applyElements, commit, elementsRef, history, isGenerating, prompt],
   );
 
   generateRef.current = generate;
@@ -435,7 +659,8 @@ export const useAIAssistant = ({
       }
 
       void generateRef.current?.({
-        prompt: "I have made my move. Your turn — respond to what changed.",
+        prompt:
+          "The user has paused. Look at what changed and decide: if something you could draw would clearly help now, draw it; otherwise reply with action \"wait\" and a short note.",
         hidden: true,
       });
     }, AUTO_RESPOND_DELAY_MS);

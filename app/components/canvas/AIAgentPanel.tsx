@@ -14,6 +14,8 @@ import { FiCornerDownLeft, FiTrash2, FiX } from "react-icons/fi";
 interface AIChatHistoryEntry {
   role: "user" | "model";
   parts: Array<{ text: string }>;
+  /** Sent to the model but kept out of the transcript (an automatic turn). */
+  hidden?: boolean;
 }
 
 interface AIAgentPanelProps {
@@ -22,6 +24,9 @@ interface AIAgentPanelProps {
   history: AIChatHistoryEntry[];
   isGenerating: boolean;
   error: string | null;
+  /** When on, the assistant takes its own turn after each edit to the canvas. */
+  autoRespond: boolean;
+  onToggleAutoRespond: (autoRespond: boolean) => void;
   onPromptChange: (prompt: string) => void;
   onSend: () => void;
   onDismissError: () => void;
@@ -41,6 +46,8 @@ function AIAgentPanel({
   history,
   isGenerating,
   error,
+  autoRespond,
+  onToggleAutoRespond,
   onPromptChange,
   onSend,
   onDismissError,
@@ -52,11 +59,15 @@ function AIAgentPanel({
 
   const messages = useMemo(
     () =>
-      history.map((entry, index) => ({
-        id: `${entry.role}-${index}`,
-        role: entry.role,
-        text: entry.parts[0]?.text ?? "",
-      })),
+      history
+        // Automatic turns are sent to the model but never shown: a column of
+        // "your turn" prompts is noise the user did not write.
+        .filter((entry) => !entry.hidden)
+        .map((entry, index) => ({
+          id: `${entry.role}-${index}`,
+          role: entry.role,
+          text: entry.parts[0]?.text ?? "",
+        })),
     [history],
   );
 
@@ -90,7 +101,37 @@ function AIAgentPanel({
           sees your canvas
         </span>
 
-        <div className="ml-auto flex items-center gap-0.5">
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoRespond}
+            onClick={() => onToggleAutoRespond(!autoRespond)}
+            title={
+              autoRespond
+                ? "Live is on: the assistant replies on its own after each move. Click to turn off."
+                : "Live is off: turn on to let the assistant reply on its own after each move."
+            }
+            aria-label="Live: reply automatically after each move"
+            className="flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-medium transition-colors"
+            style={{
+              background: autoRespond ? "var(--accent)" : "var(--hover-bg)",
+              color: autoRespond
+                ? "var(--accent-contrast)"
+                : "var(--text-muted)",
+            }}
+          >
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                background: autoRespond
+                  ? "var(--accent-contrast)"
+                  : "var(--text-faint)",
+              }}
+            />
+            Live
+          </button>
+
           {messages.length > 0 && (
             <button
               type="button"

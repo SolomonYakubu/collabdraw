@@ -124,8 +124,22 @@ const Canvas: React.FC<CanvasProps> = ({
    * Scene
    * ------------------------------------------------------------------ */
 
+  /**
+   * Assigned to `ai.notifyUserEdit` once the assistant exists. A ref breaks the
+   * construction-order cycle: `useScene` is created (and its `onChange` bound)
+   * before `useAIAssistant`, which itself needs `applyElements` from `useScene`.
+   */
+  const notifyEditRef = useRef<() => void>(() => {});
+
   const handleSceneChange = useCallback(
     ({ elements, changed, deletedIds, mode }: SceneBroadcast) => {
+      // A locally-originated change is the user taking their turn. `onChange`
+      // never fires for remote peers' edits (they apply with broadcast:"none"),
+      // and the assistant hook filters out its own writes, so this can fire
+      // unconditionally — including offline, which the collaboration send below
+      // skips.
+      notifyEditRef.current();
+
       if (!isCollaborative) {
         return;
       }
@@ -148,6 +162,7 @@ const Canvas: React.FC<CanvasProps> = ({
     elements,
     elementsRef,
     applyElements,
+    commit,
     undo,
     redo,
     canUndo,
@@ -723,6 +738,7 @@ const Canvas: React.FC<CanvasProps> = ({
   const ai = useAIAssistant({
     elementsRef,
     applyElements,
+    commit,
     style,
     roomId,
     getViewportCenter: () =>
@@ -734,6 +750,9 @@ const Canvas: React.FC<CanvasProps> = ({
       setSelectedIds([]);
     },
   });
+
+  // Now that the assistant exists, let scene changes reach it (see notifyEditRef).
+  notifyEditRef.current = ai.notifyUserEdit;
 
   const openAIPanel = useCallback(() => {
     setIsAIPanelOpen((open) => !open);
@@ -922,6 +941,8 @@ const Canvas: React.FC<CanvasProps> = ({
         history={ai.history}
         isGenerating={ai.isGenerating}
         error={ai.error}
+        autoRespond={ai.autoRespond}
+        onToggleAutoRespond={ai.setAutoRespond}
         onPromptChange={ai.setPrompt}
         onSend={ai.generate}
         onDismissError={ai.dismissError}

@@ -720,12 +720,21 @@ export const exportSceneToDataURL = (
     padding = 24,
     scale = 2,
     maxDimension,
+    format = "png",
+    quality = 0.92,
   }: {
     background?: string;
     padding?: number;
     scale?: number;
     /** Cap the longest side, for a snapshot that has to fit in a payload. */
     maxDimension?: number;
+    /**
+     * PNG is lossless but heavy in base64; JPEG trades crispness for a much
+     * smaller payload when the picture is going to a model rather than a file.
+     */
+    format?: "png" | "jpeg";
+    /** JPEG quality, ignored for PNG. */
+    quality?: number;
   } = {},
 ): string | null => {
   const visible = elements.filter((element) => !element.isDeleted);
@@ -776,5 +785,7 @@ export const exportSceneToDataURL = (
     drawElement(roughCanvas, context, { ...element, isInProgress: false });
   }
 
-  return canvas.toDataURL("image/png");
+  return format === "jpeg"
+    ? canvas.toDataURL("image/jpeg", quality)
+    : canvas.toDataURL("image/png");
 };
