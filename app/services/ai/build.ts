@@ -24,7 +24,11 @@ import { ACCENT_COLORS, type NodeAccent } from "./graph";
 import type { GridSpec } from "./grid";
 import type { SceneItem, SceneSpec } from "./scene";
 import type { SequenceSpec } from "./sequence";
-import { buildSceneFromGraph, buildSceneFromSystemGraph, type BuiltScene } from "./buildScene";
+import {
+  buildSceneFromGraph,
+  buildSceneFromSystemGraph,
+  type BuiltScene,
+} from "./buildScene";
 import type { DetectedGrid } from "./describeScene";
 import type { DrawingIntent } from "./intent";
 
@@ -627,7 +631,8 @@ export const buildSequence = (
       (participant) =>
         Math.ceil(
           measureTextWidth(participant.label, style.fontSize, style.fontFamily),
-        ) + CELL_PADDING * 2,
+        ) +
+        CELL_PADDING * 2,
     ),
   );
 

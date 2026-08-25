@@ -39,7 +39,10 @@ export const inferComponentType = (
   /** First match wins, so order encodes priority — "cache cluster" is a cache. */
   const patterns: Array<[RegExp, SystemComponentType]> = [
     [/\b(load[- ]?balancer|\blb\b|balancer)\b/, "load-balancer"],
-    [/\b(database|db|postgres(ql)?|mysql|mongo(db)?|dynamo(db)?)\b/, "database"],
+    [
+      /\b(database|db|postgres(ql)?|mysql|mongo(db)?|dynamo(db)?)\b/,
+      "database",
+    ],
     [/\b(cache|redis|memcached)\b/, "cache"],
     [/\b(queue|kafka|rabbitmq|sqs|pubsub|pub\/sub|broker)\b/, "queue"],
     [/\b(s3|bucket|blob storage|object storage|storage)\b/, "storage"],
@@ -163,7 +166,8 @@ const EPSILON = 2;
 
 const isEvenlySpaced = (values: number[], expected: number): boolean =>
   values.every(
-    (value, index) => Math.abs(value - (values[0] + index * expected)) <= EPSILON,
+    (value, index) =>
+      Math.abs(value - (values[0] + index * expected)) <= EPSILON,
   );
 
 /**
@@ -171,9 +175,14 @@ const isEvenlySpaced = (values: number[], expected: number): boolean =>
  * same extent. This is what a hand-drawn or generated tic-tac-toe grid is.
  */
 const detectBoard = (elements: readonly Shape[]): DetectedGrid | null => {
-  const verticals: Array<{ id: string; x: number; from: number; to: number }> = [];
-  const horizontals: Array<{ id: string; y: number; from: number; to: number }> =
+  const verticals: Array<{ id: string; x: number; from: number; to: number }> =
     [];
+  const horizontals: Array<{
+    id: string;
+    y: number;
+    from: number;
+    to: number;
+  }> = [];
 
   for (const element of elements) {
     if (element.isDeleted || element.tool !== "Line") {
@@ -309,10 +318,7 @@ const detectTable = (elements: readonly Shape[]): DetectedGrid | null => {
     return null;
   }
 
-  if (
-    !isEvenlySpaced(xs, first.width) ||
-    !isEvenlySpaced(ys, first.height)
-  ) {
+  if (!isEvenlySpaced(xs, first.width) || !isEvenlySpaced(ys, first.height)) {
     return null;
   }
 

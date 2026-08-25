@@ -85,7 +85,8 @@ const findElement = (
   id: string | undefined,
 ): Shape | null =>
   id
-    ? elements.find((element) => element.id === id && !element.isDeleted) ?? null
+    ? (elements.find((element) => element.id === id && !element.isDeleted) ??
+      null)
     : null;
 
 const getAnchorPoint = (element: Shape, focus: Point): Point => {
@@ -277,8 +278,14 @@ const resolveEnds = (
     }
   }
 
-  const startGap = Math.max(element.startBinding?.gap ?? MIN_BINDING_GAP, MIN_BINDING_GAP);
-  const endGap = Math.max(element.endBinding?.gap ?? MIN_BINDING_GAP, MIN_BINDING_GAP);
+  const startGap = Math.max(
+    element.startBinding?.gap ?? MIN_BINDING_GAP,
+    MIN_BINDING_GAP,
+  );
+  const endGap = Math.max(
+    element.endBinding?.gap ?? MIN_BINDING_GAP,
+    MIN_BINDING_GAP,
+  );
 
   return {
     start:
@@ -309,7 +316,12 @@ const collectObstacles = (
     return obstacles.slice(0, MAX_OBSTACLES);
   }
 
-  const corridor = normalizeBox(ends.start.x, ends.start.y, ends.end.x, ends.end.y);
+  const corridor = normalizeBox(
+    ends.start.x,
+    ends.start.y,
+    ends.end.x,
+    ends.end.y,
+  );
   const boundIds = new Set(
     [element.startBinding?.elementId, element.endBinding?.elementId].filter(
       (id): id is string => Boolean(id),
@@ -423,7 +435,9 @@ export const refreshLinearElement = (
     element.x2 === ends.end.x &&
     element.y2 === ends.end.y &&
     element.route.length === route.length &&
-    route.every((value, index) => Math.abs(element.route[index] - value) < 0.01);
+    route.every(
+      (value, index) => Math.abs(element.route[index] - value) < 0.01,
+    );
 
   if (unchanged) {
     return element;

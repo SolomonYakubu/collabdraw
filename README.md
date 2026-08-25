@@ -37,7 +37,7 @@ Connections
 - Arrows bind to shapes as you draw, snapping to the edge before you let go; the
   candidate shape is highlighted
 - Three shapes of connector: **straight**, **curved**, and **elbow** —
-  right-angled with rounded corners, which routes *around* the shapes it joins
+  right-angled with rounded corners, which routes _around_ the shapes it joins
   and threads gaps between them rather than cutting through
 - Bound arrows follow their shapes when those move or resize, sliding around the
   outline and keeping a small gap; elbows re-route as they go
@@ -80,13 +80,13 @@ AI drawing
   - **diagrams** — architectures, org charts, state machines, process steps
 - It says where its output goes — extending what you have, sitting beside it, or
   replacing it — so a new rendering is never stacked on top of the old one
-- The model returns *structure*, never coordinates; the app does the layout, sizes
+- The model returns _structure_, never coordinates; the app does the layout, sizes
   every box to its label, and draws the connectors — so nothing overlaps and
   nothing lands off-screen
 - Generated arrows are ordinary bound arrows, so dragging a node moves them too
 - It sees what is already on the canvas — both as structure and as a picture, so
   it can read freehand sketches too — and builds on it:
-  - "your turn" plays into the *existing* board rather than drawing a new one
+  - "your turn" plays into the _existing_ board rather than drawing a new one
   - "complete this" adds to the drawing you started, in place
   - "add a Redis cache between the API and the database" attaches to the nodes
     already there and retires the link it replaced
@@ -94,30 +94,30 @@ AI drawing
 
 ## Keyboard shortcuts
 
-| | |
-|---|---|
-| `V` / `1` | Selection |
-| `H` | Hand (pan) |
-| `R` / `2` | Rectangle |
-| `D` / `3` | Diamond |
-| `O` / `4` | Ellipse |
-| `A` / `5` | Arrow |
-| `L` / `6` | Line |
-| `P` / `7` | Draw |
-| `T` / `8` | Text |
-| `E` / `0` | Eraser |
-| `Q` | Keep the current tool after drawing |
-| `Space`+drag | Pan |
-| `Ctrl`/`Cmd`+`Z` / `Shift`+`Z` | Undo / redo |
-| `Ctrl`/`Cmd`+`A` | Select all |
-| `Ctrl`/`Cmd`+`D` | Duplicate |
-| `Ctrl`/`Cmd`+`C` / `X` / `V` | Copy / cut / paste |
-| `Ctrl`/`Cmd`+`]` / `[` | Bring forward / send backward |
-| `Ctrl`/`Cmd`+`Shift`+`]` / `[` | Bring to front / send to back |
-| `Ctrl`/`Cmd`+`+` / `-` / `0` | Zoom in / out / reset |
-| `Shift`+`1` | Zoom to fit |
-| `Delete` | Delete selection |
-| `Escape` | Cancel or deselect |
+|                                |                                     |
+| ------------------------------ | ----------------------------------- |
+| `V` / `1`                      | Selection                           |
+| `H`                            | Hand (pan)                          |
+| `R` / `2`                      | Rectangle                           |
+| `D` / `3`                      | Diamond                             |
+| `O` / `4`                      | Ellipse                             |
+| `A` / `5`                      | Arrow                               |
+| `L` / `6`                      | Line                                |
+| `P` / `7`                      | Draw                                |
+| `T` / `8`                      | Text                                |
+| `E` / `0`                      | Eraser                              |
+| `Q`                            | Keep the current tool after drawing |
+| `Space`+drag                   | Pan                                 |
+| `Ctrl`/`Cmd`+`Z` / `Shift`+`Z` | Undo / redo                         |
+| `Ctrl`/`Cmd`+`A`               | Select all                          |
+| `Ctrl`/`Cmd`+`D`               | Duplicate                           |
+| `Ctrl`/`Cmd`+`C` / `X` / `V`   | Copy / cut / paste                  |
+| `Ctrl`/`Cmd`+`]` / `[`         | Bring forward / send backward       |
+| `Ctrl`/`Cmd`+`Shift`+`]` / `[` | Bring to front / send to back       |
+| `Ctrl`/`Cmd`+`+` / `-` / `0`   | Zoom in / out / reset               |
+| `Shift`+`1`                    | Zoom to fit                         |
+| `Delete`                       | Delete selection                    |
+| `Escape`                       | Cancel or deselect                  |
 
 ## Getting Started
 

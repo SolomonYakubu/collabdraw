@@ -84,8 +84,7 @@ const ZONE_LABEL_OFFSET = 12;
  * to fit after the fact.
  */
 const measureNodeFor =
-  (style: ElementStyle) =>
-  (node: { label: string; shape: NodeShape }) => {
+  (style: ElementStyle) => (node: { label: string; shape: NodeShape }) => {
     const lines = wrapText(
       node.label,
       MAX_LABEL_WIDTH,
@@ -139,7 +138,8 @@ const findExistingNode = (
 
     if ((element as TextShape).text.trim().toLowerCase() === wanted) {
       return (
-        existing.find((candidate) => candidate.id === element.containerId) ?? null
+        existing.find((candidate) => candidate.id === element.containerId) ??
+        null
       );
     }
   }
@@ -271,7 +271,10 @@ export const buildSceneFromGraph = (
       continue;
     }
 
-    const fromCenter = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+    const fromCenter = {
+      x: from.x + from.width / 2,
+      y: from.y + from.height / 2,
+    };
     const toCenter = { x: to.x + to.width / 2, y: to.y + to.height / 2 };
 
     const arrow = createElement(
@@ -287,7 +290,11 @@ export const buildSceneFromGraph = (
         edgeStyle: "elbow",
       },
       style.stroke,
-      { ...style, stroke: DEFAULT_STYLE.stroke, strokeStyle: edge.dashed ? "dashed" : "solid" },
+      {
+        ...style,
+        stroke: DEFAULT_STYLE.stroke,
+        strokeStyle: edge.dashed ? "dashed" : "solid",
+      },
     )!;
 
     scene.push(arrow);
@@ -342,7 +349,9 @@ export const buildSceneFromGraph = (
   }
 
   // Keep only what is new, plus the existing elements bindings changed.
-  const createdIds = new Set([...created, ...scene].map((element) => element.id));
+  const createdIds = new Set(
+    [...created, ...scene].map((element) => element.id),
+  );
   const removed = new Set(removedIds);
   const result = working.filter(
     (element) =>
@@ -522,7 +531,12 @@ export const buildSceneFromSystemGraph = (
    * Arrow plus the two endpoints it joins, resolved before any binding so an
    * unresolvable edge is skipped rather than mis-binding a later pair.
    */
-  const connectors: Array<{ arrowId: string; from: Shape; to: Shape; dashed: boolean }> = [];
+  const connectors: Array<{
+    arrowId: string;
+    from: Shape;
+    to: Shape;
+    dashed: boolean;
+  }> = [];
 
   for (const edge of spec.edges) {
     const from = containerFor.get(edge.from);
@@ -532,7 +546,10 @@ export const buildSceneFromSystemGraph = (
       continue;
     }
 
-    const fromCenter = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+    const fromCenter = {
+      x: from.x + from.width / 2,
+      y: from.y + from.height / 2,
+    };
     const toCenter = { x: to.x + to.width / 2, y: to.y + to.height / 2 };
 
     const arrow = createElement(

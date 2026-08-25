@@ -15,19 +15,21 @@ Dedicated Socket.IO WebSocket backend for real-time multiplayer drawing, cursor 
 
 ## Environment Variables
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `PORT` | Server listening port | `3001` |
-| `CLIENT_ORIGIN` | Allowed CORS origin (e.g. `https://your-app.vercel.app`) | `*` |
+| Variable        | Description                                              | Default |
+| :-------------- | :------------------------------------------------------- | :------ |
+| `PORT`          | Server listening port                                    | `3001`  |
+| `CLIENT_ORIGIN` | Allowed CORS origin (e.g. `https://your-app.vercel.app`) | `*`     |
 
 ## Running Locally
 
 From repository root:
+
 ```bash
 npm run server
 ```
 
 Or from inside `server/`:
+
 ```bash
 npm install
 npm start
@@ -36,6 +38,7 @@ npm start
 ## Deployment (Render / Railway / Fly.io)
 
 When deploying this server independently:
+
 - **Root Directory:** `server` (or repository root with start command `node server/src/index.js`)
 - **Build Command:** `npm install`
 - **Start Command:** `npm start` (or `node src/index.js`)

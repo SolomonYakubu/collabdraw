@@ -210,7 +210,9 @@ const Canvas: React.FC<CanvasProps> = ({
         // update storms.
         applyElements(
           (previous) => {
-            const byId = new Map(previous.map((element) => [element.id, element]));
+            const byId = new Map(
+              previous.map((element) => [element.id, element]),
+            );
             for (const element of incoming) {
               byId.set(element.id, element);
             }
@@ -232,7 +234,13 @@ const Canvas: React.FC<CanvasProps> = ({
       },
       getScene: () => elementsRef.current,
     });
-  }, [applyElements, elementsRef, isCollaborative, resetHistory, setEventHandlers]);
+  }, [
+    applyElements,
+    elementsRef,
+    isCollaborative,
+    resetHistory,
+    setEventHandlers,
+  ]);
 
   /* ------------------------------------------------------------------ *
    * Derived state
@@ -305,7 +313,7 @@ const Canvas: React.FC<CanvasProps> = ({
 
   const bindingHighlightElement = useMemo(() => {
     const id = interaction.visuals.bindingHighlightId;
-    return id ? elements.find((element) => element.id === id) ?? null : null;
+    return id ? (elements.find((element) => element.id === id) ?? null) : null;
   }, [elements, interaction.visuals.bindingHighlightId]);
 
   /* ------------------------------------------------------------------ *
@@ -599,10 +607,7 @@ const Canvas: React.FC<CanvasProps> = ({
       zoomIn,
       zoomOut,
       resetZoom,
-      zoomToFit: () =>
-        zoomToFit(
-          selectionBounds ?? sceneBounds,
-        ),
+      zoomToFit: () => zoomToFit(selectionBounds ?? sceneBounds),
       escape: handleEscape,
       isEditingText: () => textEditor.editingId !== null,
     },
@@ -669,7 +674,10 @@ const Canvas: React.FC<CanvasProps> = ({
       }
 
       const rect = container.getBoundingClientRect();
-      setContextMenu({ x: event.clientX - rect.left, y: event.clientY - rect.top });
+      setContextMenu({
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top,
+      });
     },
     [elementsRef, viewportRef],
   );
@@ -882,7 +890,9 @@ const Canvas: React.FC<CanvasProps> = ({
           onExport={exportPNG}
           onShare={isCollaborative ? copyShareableLink : undefined}
           linkCopied={linkCopied}
-          onToggleUsers={isCollaborative ? () => setShowUsers((s) => !s) : undefined}
+          onToggleUsers={
+            isCollaborative ? () => setShowUsers((s) => !s) : undefined
+          }
           userCount={users.length}
           onToggleAI={openAIPanel}
           isAIPanelOpen={isAIPanelOpen}
@@ -930,7 +940,10 @@ const Canvas: React.FC<CanvasProps> = ({
           />
           <div
             className="animate-slide-up relative m-2 mt-auto max-h-[75vh] overflow-y-auto shadow-2xl"
-            style={{ marginBottom: "max(4.5rem, calc(env(safe-area-inset-bottom, 0rem) + 4.25rem))" }}
+            style={{
+              marginBottom:
+                "max(4.5rem, calc(env(safe-area-inset-bottom, 0rem) + 4.25rem))",
+            }}
           >
             <StylePanel
               style={style}
@@ -984,7 +997,10 @@ const Canvas: React.FC<CanvasProps> = ({
       {/* Mobile zoom controls — compact chip, bottom-left above the tool dock */}
       <div
         className="pointer-events-none fixed left-2 z-20 flex md:hidden"
-        style={{ bottom: "max(4.75rem, calc(env(safe-area-inset-bottom, 0rem) + 4.5rem))" }}
+        style={{
+          bottom:
+            "max(4.75rem, calc(env(safe-area-inset-bottom, 0rem) + 4.5rem))",
+        }}
       >
         <MobileZoomControl
           zoom={viewport.zoom}
@@ -1012,7 +1028,10 @@ const Canvas: React.FC<CanvasProps> = ({
                 />
                 {user.tag}
                 {user.id === userId && (
-                  <span className="text-xs" style={{ color: "var(--text-faint)" }}>
+                  <span
+                    className="text-xs"
+                    style={{ color: "var(--text-faint)" }}
+                  >
                     (you)
                   </span>
                 )}

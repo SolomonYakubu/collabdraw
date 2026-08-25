@@ -66,13 +66,19 @@ const segmentCrossesBox = (a: Point, b: Point, box: BoundingBox): boolean => {
 };
 
 const uniqueSorted = (values: number[]): number[] => {
-  const sorted = [...new Set(values.map((value) => Math.round(value * 100) / 100))];
+  const sorted = [
+    ...new Set(values.map((value) => Math.round(value * 100) / 100)),
+  ];
   sorted.sort((a, b) => a - b);
   return sorted;
 };
 
 /** Push a point out from a shape along its heading, to start the route cleanly. */
-const dongle = (point: Point, heading: Heading | null | undefined, by: number): Point => {
+const dongle = (
+  point: Point,
+  heading: Heading | null | undefined,
+  by: number,
+): Point => {
   if (!heading) {
     return { ...point };
   }
@@ -155,16 +161,36 @@ const search = (
 
     const neighbours: GridNode[] = [];
     if (node.ix > 0) {
-      neighbours.push({ ix: node.ix - 1, iy: node.iy, x: xs[node.ix - 1], y: node.y });
+      neighbours.push({
+        ix: node.ix - 1,
+        iy: node.iy,
+        x: xs[node.ix - 1],
+        y: node.y,
+      });
     }
     if (node.ix < xs.length - 1) {
-      neighbours.push({ ix: node.ix + 1, iy: node.iy, x: xs[node.ix + 1], y: node.y });
+      neighbours.push({
+        ix: node.ix + 1,
+        iy: node.iy,
+        x: xs[node.ix + 1],
+        y: node.y,
+      });
     }
     if (node.iy > 0) {
-      neighbours.push({ ix: node.ix, iy: node.iy - 1, x: node.x, y: ys[node.iy - 1] });
+      neighbours.push({
+        ix: node.ix,
+        iy: node.iy - 1,
+        x: node.x,
+        y: ys[node.iy - 1],
+      });
     }
     if (node.iy < ys.length - 1) {
-      neighbours.push({ ix: node.ix, iy: node.iy + 1, x: node.x, y: ys[node.iy + 1] });
+      neighbours.push({
+        ix: node.ix,
+        iy: node.iy + 1,
+        x: node.x,
+        y: ys[node.iy + 1],
+      });
     }
 
     for (const neighbour of neighbours) {
@@ -176,7 +202,8 @@ const search = (
 
       const movingHorizontally = neighbour.ix !== node.ix;
       const turned =
-        parentIsHorizontal !== null && parentIsHorizontal !== movingHorizontally;
+        parentIsHorizontal !== null &&
+        parentIsHorizontal !== movingHorizontally;
 
       const tentative =
         (gScore.get(nodeKey) ?? Number.POSITIVE_INFINITY) +
@@ -203,7 +230,11 @@ export const simplifyOrthogonalPath = (points: readonly Point[]): Point[] => {
     const last = result[result.length - 1];
 
     // Skip duplicates.
-    if (last && Math.abs(last.x - point.x) < 0.01 && Math.abs(last.y - point.y) < 0.01) {
+    if (
+      last &&
+      Math.abs(last.x - point.x) < 0.01 &&
+      Math.abs(last.y - point.y) < 0.01
+    ) {
       continue;
     }
 
@@ -429,7 +460,10 @@ export const getFacingHeadings = (
   from: BoundingBox,
   to: BoundingBox,
 ): { start: Heading; end: Heading } => {
-  const fromCenter = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+  const fromCenter = {
+    x: from.x + from.width / 2,
+    y: from.y + from.height / 2,
+  };
   const toCenter = { x: to.x + to.width / 2, y: to.y + to.height / 2 };
 
   const dx = toCenter.x - fromCenter.x;

@@ -187,7 +187,11 @@ const Toolbar: React.FC<ToolbarProps> = ({
     <IconButton label="Undo — Ctrl+Z" onClick={onUndo} disabled={!canUndo}>
       <FiCornerUpLeft size={15} />
     </IconButton>
-    <IconButton label="Redo — Ctrl+Shift+Z" onClick={onRedo} disabled={!canRedo}>
+    <IconButton
+      label="Redo — Ctrl+Shift+Z"
+      onClick={onRedo}
+      disabled={!canRedo}
+    >
       <FiCornerUpRight size={15} />
     </IconButton>
 

@@ -38,7 +38,11 @@ const FILL_STYLES: Array<{ value: FillStyle; label: string }> = [
   { value: "dots", label: "Dots" },
 ];
 
-const STROKE_STYLES: Array<{ value: StrokeStyle; label: string; dash: string }> = [
+const STROKE_STYLES: Array<{
+  value: StrokeStyle;
+  label: string;
+  dash: string;
+}> = [
   { value: "solid", label: "Solid", dash: "" },
   { value: "dashed", label: "Dashed", dash: "6 4" },
   { value: "dotted", label: "Dotted", dash: "1 4" },
@@ -49,7 +53,11 @@ const STROKE_WIDTHS = [1, 2, 4];
 const EDGE_STYLES: Array<{ value: EdgeStyle; label: string; path: string }> = [
   { value: "straight", label: "Straight", path: "M2 14 L18 4" },
   { value: "curved", label: "Curved", path: "M2 14 Q10 14 10 9 T18 4" },
-  { value: "elbow", label: "Elbow", path: "M2 14 L10 14 Q12 14 12 12 L12 6 Q12 4 14 4 L18 4" },
+  {
+    value: "elbow",
+    label: "Elbow",
+    path: "M2 14 L10 14 Q12 14 12 12 L12 6 Q12 4 14 4 L18 4",
+  },
 ];
 
 const ROUGHNESS_LEVELS = [
@@ -179,7 +187,9 @@ const FillIcon: React.FC<{ value: FillStyle }> = ({ value }) => {
       {value === "dots" && (
         <g fill="currentColor">
           {[3, 8, 13, 18].map((x) =>
-            [4, 10].map((y) => <circle key={`${x}-${y}`} cx={x} cy={y} r="1.15" />),
+            [4, 10].map((y) => (
+              <circle key={`${x}-${y}`} cx={x} cy={y} r="1.15" />
+            )),
           )}
         </g>
       )}
@@ -201,7 +211,10 @@ const StylePanel: React.FC<StylePanelProps> = ({
 }) => (
   <div className="island pointer-events-auto flex w-full max-w-sm md:w-60 flex-col gap-3 p-3.5 md:p-3">
     {onClose && (
-      <div className="flex items-center justify-between border-b pb-2 md:hidden" style={{ borderColor: "var(--divider)" }}>
+      <div
+        className="flex items-center justify-between border-b pb-2 md:hidden"
+        style={{ borderColor: "var(--divider)" }}
+      >
         <div className="flex items-center gap-2">
           <span className="h-1 w-8 rounded-full bg-[var(--text-faint)] md:hidden" />
           <span className="text-sm font-semibold">Properties</span>
@@ -388,13 +401,25 @@ const StylePanel: React.FC<StylePanelProps> = ({
     {hasSelection && (
       <Section title="Actions">
         <div className="flex gap-1">
-          <Choice label="Send to back — Ctrl+Shift+[" active={false} onSelect={onSendToBack}>
+          <Choice
+            label="Send to back — Ctrl+Shift+["
+            active={false}
+            onSelect={onSendToBack}
+          >
             <FiChevronsDown size={14} />
           </Choice>
-          <Choice label="Bring to front — Ctrl+Shift+]" active={false} onSelect={onBringToFront}>
+          <Choice
+            label="Bring to front — Ctrl+Shift+]"
+            active={false}
+            onSelect={onBringToFront}
+          >
             <FiChevronsUp size={14} />
           </Choice>
-          <Choice label="Duplicate — Ctrl+D" active={false} onSelect={onDuplicate}>
+          <Choice
+            label="Duplicate — Ctrl+D"
+            active={false}
+            onSelect={onDuplicate}
+          >
             <FiCopy size={14} />
           </Choice>
           <button

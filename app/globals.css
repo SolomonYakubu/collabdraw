@@ -13,7 +13,8 @@
 
   --island-bg: #ffffff;
   --island-border: #e9ecef;
-  --island-shadow: 0 2px 4px rgb(0 0 0 / 0.06), 0 0 0 1px rgb(0 0 0 / 0.03),
+  --island-shadow:
+    0 2px 4px rgb(0 0 0 / 0.06), 0 0 0 1px rgb(0 0 0 / 0.03),
     0 8px 24px rgb(0 0 0 / 0.06);
 
   --text: #1b1b1f;
@@ -43,7 +44,8 @@
 
   --island-bg: #232329;
   --island-border: #31303b;
-  --island-shadow: 0 2px 4px rgb(0 0 0 / 0.4), 0 0 0 1px rgb(255 255 255 / 0.04),
+  --island-shadow:
+    0 2px 4px rgb(0 0 0 / 0.4), 0 0 0 1px rgb(255 255 255 / 0.04),
     0 8px 24px rgb(0 0 0 / 0.35);
 
   --text: #e3e3e8;
@@ -142,7 +144,9 @@ canvas {
   border-radius: 0.5rem;
   color: var(--text);
   background: transparent;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
 .island-button:hover:not(:disabled) {

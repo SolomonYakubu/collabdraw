@@ -77,7 +77,7 @@ untouched element is never re-tessellated.
 a synchronously-maintained ref, pushes that exact array onto the history stack,
 and reports what changed so collaborators can be told. Callers never write
 elements and record history separately, which is how the old code ended up
-recording the state *before* each change.
+recording the state _before_ each change.
 
 ## Rendering
 
@@ -114,7 +114,7 @@ toElementLocal(worldPoint, element)    // world  -> the element's own frame
 fromElementLocal(localPoint, element)  // and back
 ```
 
-An element's *stored* geometry — `x/y/width/height`, `points`, `x1..y2`, `route` —
+An element's _stored_ geometry — `x/y/width/height`, `points`, `x1..y2`, `route` —
 always lives in its unrotated frame; the angle is applied to the canvas context at
 draw time. So hit testing, point snapping and binding all convert the point first
 and then reuse the existing unrotated maths untouched. There is no rotated variant
@@ -135,14 +135,14 @@ top edge, and shift snaps to 15°.
 
 The pointer is mapped back into the element's frame before the box maths runs.
 That alone is not enough: the element turns about the centre of its own box, so
-changing the box moves that centre and the corner you are *not* dragging drifts.
+changing the box moves that centre and the corner you are _not_ dragging drifts.
 `applyRotatedResize` cancels it exactly, by translating the result by
 `(R(θ) − I)·Δcentre` — independent of which handle is in use. The tests assert the
 anchored corner does not move, at several angles, for corner and side handles.
 
 ## Hit testing
 
-An element with a transparent background is hit only *near its stroke*, so
+An element with a transparent background is hit only _near its stroke_, so
 clicking the hollow middle of a rectangle selects whatever is behind it. Filled
 elements are hit anywhere inside. Ellipses and diamonds use real geometry, not
 their bounding boxes. Thresholds are given in screen pixels and divided by the
@@ -196,14 +196,14 @@ place where the shape is not would be worse than not snapping at all.
 - **straight** — direct segments through the waypoints.
 - **curved** — a smooth rough.js curve through the same points.
 - **elbow** — right-angled segments with rounded corners, routed around
-  obstacles. Bound elbow ends leave from the *middle of a side*, chosen by
+  obstacles. Bound elbow ends leave from the _middle of a side_, chosen by
   `getFacingHeadings`, which is what makes a grid of connectors line up.
 
 ### Routing
 
 `elbowRouter.ts` builds a sparse grid from the interesting coordinates —
 obstacle edges plus their clearance, the endpoints, and the corridor between two
-obstacles — then runs A* across it with a penalty per turn. A sparse grid keeps
+obstacles — then runs A\* across it with a penalty per turn. A sparse grid keeps
 it to a couple of hundred nodes, so it runs comfortably inside a pointer-move.
 Obstacles are the two bound shapes plus any bindable shape sitting in the
 corridor between the ends, capped for predictable cost.
@@ -218,7 +218,7 @@ what stops a drag from jittering.
   edge and an elbow bends into place before you release. The candidate shape is
   highlighted.
 - Moving or resizing a shape drags its arrows with it (`updateBoundElements`).
-- Dragging an arrow itself does *not* re-solve its own bindings mid-gesture —
+- Dragging an arrow itself does _not_ re-solve its own bindings mid-gesture —
   otherwise it would snap back every frame and could never be moved. On release,
   `settleBindingsAfterMove` releases the ends that left their shapes and snaps
   back the ones that did not.
@@ -239,12 +239,12 @@ intent  ->  builder for its kind  ->  ordinary elements
 
 ### Four kinds
 
-| kind | for | contract |
-|---|---|---|
-| `sequence` | who does what in order: how idempotency works, OAuth, a handshake | participants + ordered messages |
-| `scene` | pictures and spatial layouts: a house, a pendulum with forces, a mock-up | items on a normalised 0-100 canvas |
-| `grid` | rows and columns: game boards, tables, calendars, matrices | counts + cell contents |
-| `diagram` | abstract things connected to abstract things, with no time axis | nodes + edges, laid out in layers |
+| kind       | for                                                                      | contract                           |
+| ---------- | ------------------------------------------------------------------------ | ---------------------------------- |
+| `sequence` | who does what in order: how idempotency works, OAuth, a handshake        | participants + ordered messages    |
+| `scene`    | pictures and spatial layouts: a house, a pendulum with forces, a mock-up | items on a normalised 0-100 canvas |
+| `grid`     | rows and columns: game boards, tables, calendars, matrices               | counts + cell contents             |
+| `diagram`  | abstract things connected to abstract things, with no time axis          | nodes + edges, laid out in layers  |
 
 The first version had only `diagram`, so every request came back as a block
 diagram. Each kind added since is one the model was previously forced to
@@ -254,7 +254,7 @@ structured as a grid.
 
 `kind` is treated as a hint rather than gospel: whichever payload actually has
 content wins, because models sometimes name one kind and fill another. The
-routing guidance leads with the *question being asked* rather than the kinds,
+routing guidance leads with the _question being asked_ rather than the kinds,
 because "how does X work" pattern-matched to "process steps" and produced a
 flowchart when a sequence diagram was wanted.
 
@@ -265,7 +265,7 @@ than the server inferring it.
 
 That inference was a keyword regex over the prompt, and it failed on the case
 that matters. Asked for "something beyond a flowchart", the model returned a
-sequence diagram whose own summary said it had *replaced* the flowchart; the
+sequence diagram whose own summary said it had _replaced_ the flowchart; the
 prompt matched none of `clear|reset|start over`, so the reply was forced to be
 additive, and a scene marked additive is anchored onto the existing drawing's
 box — so it was drawn straight on top of it. The model knew its intent all
@@ -306,7 +306,7 @@ and cell indices to build on. `describeScene` renders it three ways at once — 
 a graph, as a detected grid, and as items in the same 0-100 frame the model
 writes — and the model uses whichever fits.
 
-This is the part the first version got wrong. It described *only* labelled
+This is the part the first version got wrong. It described _only_ labelled
 container shapes and bound arrows, so a tic-tac-toe board (lines plus loose text)
 and a half-finished sketch (plain boxes plus loose text) both collapsed into an
 "N other elements" count. The model was effectively told the canvas was empty and
@@ -317,7 +317,7 @@ Now:
 - **Grids are detected geometrically** — evenly spaced separator lines, or a
   lattice of equal rectangles — so a board is recognised whether it was generated
   or drawn by hand, along with the marks in its cells. A reply naming the same
-  rows and columns is written into that board *in place*: unchanged marks are left
+  rows and columns is written into that board _in place_: unchanged marks are left
   alone, changed ones replaced, cleared ones deleted. That is what lets a game be
   played turn by turn.
 - **Scene additions are anchored** to the box the existing drawing occupies, so

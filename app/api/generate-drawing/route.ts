@@ -764,10 +764,7 @@ export async function POST(request: NextRequest) {
   const provider = resolveProvider();
 
   if (!provider) {
-    return NextResponse.json(
-      { error: CONFIG_ERROR_MESSAGE },
-      { status: 503 },
-    );
+    return NextResponse.json({ error: CONFIG_ERROR_MESSAGE }, { status: 503 });
   }
 
   let body: RequestBody;

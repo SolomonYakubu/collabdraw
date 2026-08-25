@@ -70,7 +70,10 @@ import {
   getSelectionBounds,
   setElementAngle,
 } from "../../services/canvas/transform";
-import { getSnapOffset, SNAP_THRESHOLD_PX } from "../../services/canvas/snapping";
+import {
+  getSnapOffset,
+  SNAP_THRESHOLD_PX,
+} from "../../services/canvas/snapping";
 import {
   snapToPoint,
   SNAP_POINT_THRESHOLD_PX,
@@ -86,11 +89,7 @@ import {
   snapAngle,
   snapAngleValue,
 } from "../../utils/geometry";
-import {
-  clampZoom,
-  clientToWorld,
-  zoomAtPoint,
-} from "../../utils/viewport";
+import { clampZoom, clientToWorld, zoomAtPoint } from "../../utils/viewport";
 import type { ApplyOptions, ElementsUpdater } from "./useScene";
 
 /** Pointer travel before a click turns into a drag, in screen pixels. */
@@ -438,7 +437,7 @@ export const usePointerInteraction = ({
       const gap = worldThreshold(MAX_BINDING_GAP_PX);
 
       const startTarget = startTargetId
-        ? scene.find((item) => item.id === startTargetId) ?? null
+        ? (scene.find((item) => item.id === startTargetId) ?? null)
         : null;
       const endTarget = getHoveredBindableElement(
         pointer,
@@ -448,7 +447,9 @@ export const usePointerInteraction = ({
       );
 
       const provisional = mutateElement(element, {
-        startBinding: startTarget ? createBinding(startTarget, origin, gap) : null,
+        startBinding: startTarget
+          ? createBinding(startTarget, origin, gap)
+          : null,
         endBinding: endTarget ? createBinding(endTarget, pointer, gap) : null,
       });
 
@@ -513,7 +514,14 @@ export const usePointerInteraction = ({
         setTool("Select");
       }
     },
-    [applyElements, setPending, setSelectedIds, setTool, toolLocked, worldThreshold],
+    [
+      applyElements,
+      setPending,
+      setSelectedIds,
+      setTool,
+      toolLocked,
+      worldThreshold,
+    ],
   );
 
   /* ------------------------------------------------------------------ *
@@ -570,9 +578,7 @@ export const usePointerInteraction = ({
       { deletedIds: deleted, broadcast: "elements" },
     );
 
-    setSelectedIds(
-      selectedIdsRef.current.filter((id) => !ids.has(id)),
-    );
+    setSelectedIds(selectedIdsRef.current.filter((id) => !ids.has(id)));
   }, [applyElements, resetVisuals, setSelectedIds]);
 
   /* ------------------------------------------------------------------ *
@@ -740,13 +746,7 @@ export const usePointerInteraction = ({
         { commit: false, changedIds: [arrowId] },
       );
     },
-    [
-      applyElements,
-      applyPointSnap,
-      elementsRef,
-      patchVisuals,
-      worldThreshold,
-    ],
+    [applyElements, applyPointSnap, elementsRef, patchVisuals, worldThreshold],
   );
 
   const applyRotation = useCallback(
@@ -789,7 +789,10 @@ export const usePointerInteraction = ({
               rotatedCenter.y - currentCenter.y,
             );
 
-            return setElementAngle(moved, normalizeAngle(original.angle + angle));
+            return setElementAngle(
+              moved,
+              normalizeAngle(original.angle + angle),
+            );
           });
 
           return updateBoundElements(next, ids, { skipSelf: true });
@@ -848,10 +851,10 @@ export const usePointerInteraction = ({
           const snapshot = "snapshot" in current ? current.snapshot : [];
           if (snapshot.length > 0) {
             const byId = new Map(snapshot.map((el) => [el.id, el]));
-            applyElements(
-              (prev) => prev.map((el) => byId.get(el.id) ?? el),
-              { commit: false, broadcast: "elements" },
-            );
+            applyElements((prev) => prev.map((el) => byId.get(el.id) ?? el), {
+              commit: false,
+              broadcast: "elements",
+            });
           }
         }
         resetVisuals();
@@ -949,7 +952,11 @@ export const usePointerInteraction = ({
 
         if (activeTool === "Freehand") {
           setPending(element);
-          interactionRef.current = { type: "freedraw", element, lastWorld: point };
+          interactionRef.current = {
+            type: "freedraw",
+            element,
+            lastWorld: point,
+          };
           return;
         }
 
@@ -1072,7 +1079,12 @@ export const usePointerInteraction = ({
         }
       }
 
-      const hit = getElementAtPoint(point, elementsRef.current, threshold, true);
+      const hit = getElementAtPoint(
+        point,
+        elementsRef.current,
+        threshold,
+        true,
+      );
 
       if (!hit) {
         interactionRef.current = {
@@ -1174,7 +1186,13 @@ export const usePointerInteraction = ({
 
       setHoverCursor(hit ? "move" : "default");
     },
-    [elementsRef, getSelectedElements, spacePressedRef, viewportRef, worldThreshold],
+    [
+      elementsRef,
+      getSelectedElements,
+      spacePressedRef,
+      viewportRef,
+      worldThreshold,
+    ],
   );
 
   const onPointerMove = useCallback(
@@ -1194,7 +1212,9 @@ export const usePointerInteraction = ({
         const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
 
         const canvas = canvasRef.current;
-        const rect = canvas ? canvas.getBoundingClientRect() : { left: 0, top: 0 };
+        const rect = canvas
+          ? canvas.getBoundingClientRect()
+          : { left: 0, top: 0 };
 
         if (interactionRef.current.type === "pinch") {
           const { lastDistance, lastMidpoint } = interactionRef.current;
@@ -1291,7 +1311,9 @@ export const usePointerInteraction = ({
           const spacing = worldThreshold(FREEHAND_MIN_SPACING_PX);
           const { lastWorld } = interaction;
 
-          if (Math.hypot(point.x - lastWorld.x, point.y - lastWorld.y) < spacing) {
+          if (
+            Math.hypot(point.x - lastWorld.x, point.y - lastWorld.y) < spacing
+          ) {
             return;
           }
 
@@ -1341,7 +1363,9 @@ export const usePointerInteraction = ({
 
           // Alt+drag leaves the originals behind and moves copies.
           if (interaction.altKey) {
-            const copies = snapshot.map((element) => duplicateElement(element, 0));
+            const copies = snapshot.map((element) =>
+              duplicateElement(element, 0),
+            );
             applyElements((previous) => [...previous, ...copies], {
               commit: false,
               changedIds: copies.map((element) => element.id),
@@ -1358,7 +1382,10 @@ export const usePointerInteraction = ({
 
           applyDrag(
             snapshot,
-            { x: point.x - interaction.origin.x, y: point.y - interaction.origin.y },
+            {
+              x: point.x - interaction.origin.x,
+              y: point.y - interaction.origin.y,
+            },
             !event.ctrlKey && !event.metaKey,
           );
           return;
@@ -1367,7 +1394,10 @@ export const usePointerInteraction = ({
         case "dragging": {
           applyDrag(
             interaction.snapshot,
-            { x: point.x - interaction.origin.x, y: point.y - interaction.origin.y },
+            {
+              x: point.x - interaction.origin.x,
+              y: point.y - interaction.origin.y,
+            },
             !event.ctrlKey && !event.metaKey,
           );
           return;
@@ -1490,7 +1520,9 @@ export const usePointerInteraction = ({
         case "rotating":
         case "dragging":
         case "resizing": {
-          const ids = new Set(interaction.snapshot.map((element) => element.id));
+          const ids = new Set(
+            interaction.snapshot.map((element) => element.id),
+          );
 
           applyElements(
             (previous) =>
@@ -1620,7 +1652,8 @@ export const usePointerInteraction = ({
       const snapshot = interaction.snapshot;
       const byId = new Map(snapshot.map((element) => [element.id, element]));
       applyElements(
-        (previous) => previous.map((element) => byId.get(element.id) ?? element),
+        (previous) =>
+          previous.map((element) => byId.get(element.id) ?? element),
         { commit: false, broadcast: "elements" },
       );
     }

@@ -9,8 +9,32 @@ const geist = Geist({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
+  ),
   title: "CollabDraw",
   description: "Real-time collaborative whiteboard",
+  openGraph: {
+    title: "CollabDraw",
+    description: "Real-time collaborative whiteboard",
+    url: "/",
+    siteName: "CollabDraw",
+    type: "website",
+    images: [
+      {
+        url: "/og-image.png",
+        width: 1247,
+        height: 583,
+        alt: "CollabDraw — real-time collaborative whiteboard",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "CollabDraw",
+    description: "Real-time collaborative whiteboard",
+    images: ["/og-image.png"],
+  },
 };
 
 export const viewport: Viewport = {
@@ -60,6 +84,24 @@ export default function RootLayout({
     // otherwise flag as a mismatch.
     <html lang="en" suppressHydrationWarning>
       <head>
+        <link
+          rel="apple-touch-icon"
+          sizes="180x180"
+          href="/apple-touch-icon.png"
+        />
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="32x32"
+          href="/favicon-32x32.png"
+        />
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="16x16"
+          href="/favicon-16x16.png"
+        />
+        <link rel="manifest" href="/site.webmanifest"></link>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
       <body className={`${geist.variable} antialiased`}>

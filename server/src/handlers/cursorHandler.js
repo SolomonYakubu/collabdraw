@@ -3,11 +3,11 @@
  */
 function registerCursorHandlers(io, socket) {
   // Handle cursor position updates (~20-60Hz per active user)
-  socket.on('cursor-position', (data) => {
+  socket.on("cursor-position", (data) => {
     const { roomId, userId, x, y, tag } = data || {};
 
     if (roomId && userId !== undefined && x !== undefined && y !== undefined) {
-      socket.to(roomId).emit('cursor-position', {
+      socket.to(roomId).emit("cursor-position", {
         userId,
         x,
         y,
@@ -17,10 +17,10 @@ function registerCursorHandlers(io, socket) {
   });
 
   // Handle in-progress shape updates (live drag preview)
-  socket.on('shape-in-progress', (data) => {
+  socket.on("shape-in-progress", (data) => {
     const { roomId, userId, shape } = data || {};
     if (roomId && shape) {
-      socket.to(roomId).emit('shape-in-progress', {
+      socket.to(roomId).emit("shape-in-progress", {
         userId,
         shape,
       });
@@ -28,10 +28,10 @@ function registerCursorHandlers(io, socket) {
   });
 
   // Handle drawing state updates (isDrawing flag for status indicators)
-  socket.on('drawing-state', (data) => {
+  socket.on("drawing-state", (data) => {
     const { roomId } = data || {};
-    if (typeof roomId === 'string' && roomId) {
-      socket.to(roomId).emit('drawing-state', data);
+    if (typeof roomId === "string" && roomId) {
+      socket.to(roomId).emit("drawing-state", data);
     }
   });
 }

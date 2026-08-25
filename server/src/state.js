@@ -108,7 +108,7 @@ class RoomStore {
         const merged = [...this.roomCanvasStates.get(roomId)];
         shapes.forEach((incomingShape) => {
           const index = merged.findIndex(
-            (shape) => String(shape.id) === String(incomingShape.id)
+            (shape) => String(shape.id) === String(incomingShape.id),
           );
           if (index >= 0) {
             merged[index] = incomingShape;
@@ -120,11 +120,15 @@ class RoomStore {
       }
     }
 
-    if (deletedShapeIds && deletedShapeIds.length > 0 && this.roomCanvasStates.has(roomId)) {
+    if (
+      deletedShapeIds &&
+      deletedShapeIds.length > 0 &&
+      this.roomCanvasStates.has(roomId)
+    ) {
       const currentShapes = this.roomCanvasStates.get(roomId);
       const deleted = new Set(deletedShapeIds.map(String));
       const updatedShapes = currentShapes.filter(
-        (shape) => !deleted.has(String(shape.id))
+        (shape) => !deleted.has(String(shape.id)),
       );
       this.roomCanvasStates.set(roomId, updatedShapes);
     }

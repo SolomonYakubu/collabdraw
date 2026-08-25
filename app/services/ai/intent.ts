@@ -96,13 +96,15 @@ export const parseDrawingIntent = (
 
   const placement = PLACEMENTS.includes(raw.placement as Placement)
     ? (raw.placement as Placement)
-    // An older reply, or one that omitted it: `replaceCanvas` was the previous
-    // spelling, and adding is the safe default.
-    : asBoolean(raw.replaceCanvas)
+    : // An older reply, or one that omitted it: `replaceCanvas` was the previous
+      // spelling, and adding is the safe default.
+      asBoolean(raw.replaceCanvas)
       ? "replace"
       : "add";
 
-  const action: IntentAction = INTENT_ACTIONS.includes(raw.action as IntentAction)
+  const action: IntentAction = INTENT_ACTIONS.includes(
+    raw.action as IntentAction,
+  )
     ? (raw.action as IntentAction)
     : "draw";
 

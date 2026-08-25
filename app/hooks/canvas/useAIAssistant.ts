@@ -22,7 +22,10 @@ import {
 } from "../../services/ai/build";
 import { MAX_SCENE_ITEMS, parseSceneItem } from "../../services/ai/scene";
 import { readStringField, scanArray } from "../../services/ai/streamParse";
-import { parseDrawingIntent, type DrawingIntent } from "../../services/ai/intent";
+import {
+  parseDrawingIntent,
+  type DrawingIntent,
+} from "../../services/ai/intent";
 import type { ApplyOptions, ElementsUpdater } from "./useScene";
 
 export interface AIChatEntry {
@@ -251,397 +254,401 @@ export const useAIAssistant = ({
       prompt: override,
       hidden = false,
     }: { prompt?: string; hidden?: boolean } = {}) => {
-    const submitted = (override ?? prompt).trim();
+      const submitted = (override ?? prompt).trim();
 
-    if (!submitted || isGenerating) {
-      return;
-    }
-
-    const sequence = ++requestSeqRef.current;
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    setIsGenerating(true);
-    setError(null);
-
-    const nextHistory: AIChatEntry[] = [
-      ...history,
-      { role: "user", parts: [{ text: submitted }], hidden },
-    ];
-
-    const sceneForRequest = describeScene(elementsRef.current);
-    const knownIds = new Set(sceneForRequest.nodes.map((node) => node.id));
-
-    // A picture of the canvas, but only when words fall short: freehand strokes
-    // are the one thing the structured description cannot convey. Everything
-    // else (shapes, text, layout) is already in `sceneForRequest`, so skipping
-    // the image there saves its base64 payload on most turns.
-    let snapshot: string | null = null;
-    const hasDrawnMarks = elementsRef.current.some(
-      (element) => !element.isDeleted && SNAPSHOT_TOOLS.has(element.tool),
-    );
-
-    if (hasDrawnMarks) {
-      try {
-        snapshot = exportSceneToDataURL(elementsRef.current, {
-          maxDimension: SNAPSHOT_MAX_DIMENSION,
-          scale: 1.5,
-          format: "jpeg",
-          quality: SNAPSHOT_JPEG_QUALITY,
-        });
-      } catch {
-        // Rendering the snapshot must never block the request.
-        snapshot = null;
-      }
-    }
-
-    // Everything on the canvas before this turn, kept so a failed or diverged
-    // stream can be rolled back cleanly.
-    const baseElements = elementsRef.current;
-    const stale = () =>
-      requestSeqRef.current !== sequence || !mountedRef.current;
-
-    /** Put the canvas back the way it was before an incremental scene began. */
-    const restoreBase = () => {
-      applyElements(() => baseElements, {
-        commit: false,
-        broadcast: "full",
-      });
-    };
-
-    /** The world box a streamed scene maps into, matching the whole-spec build. */
-    const streamSceneFrame = (placement: string): SceneFrame => {
-      const existing = placement === "replace" ? [] : baseElements;
-      const occupied = unionBounds(existing);
-      const anchorBox = placement === "add" && occupied ? occupied : null;
-      const origin = occupied
-        ? { x: occupied.x, y: occupied.y + occupied.height + PLACEMENT_GAP }
-        : (() => {
-            const center = centerRef.current();
-            return { x: center.x - 300, y: center.y - 220 };
-          })();
-      return sceneFrame(origin, anchorBox);
-    };
-
-    /** Append one item's elements as they stream in (no commit yet). */
-    const appendStreamed = (built: Shape[], clearFirst: boolean) => {
-      applyElements(
-        (previous) => (clearFirst ? [...built] : [...previous, ...built]),
-        {
-          commit: false,
-          // The clearing write is positional, so peers get the whole scene;
-          // later appends only carry the new elements.
-          broadcast: clearFirst ? "full" : "elements",
-          changedIds: built.map((element) => element.id),
-        },
-      );
-    };
-
-    /**
-     * The path for everything that cannot render item by item — grids, diagrams,
-     * sequences, and any scene whose incremental parse diverged. Identical to the
-     * behaviour before streaming: build the whole thing, then reveal it in order.
-     */
-    const revealWhole = async (intent: DrawingIntent) => {
-      const replacing = intent.placement === "replace";
-      const existing = replacing ? [] : elementsRef.current;
-      const occupied = unionBounds(existing);
-      const continuing = intent.placement === "add";
-
-      const anchorGrid =
-        continuing && intent.kind === "grid" ? sceneForRequest.grid : null;
-      const anchorBox =
-        continuing && intent.kind === "scene" && occupied ? occupied : null;
-
-      const origin = occupied
-        ? { x: occupied.x, y: occupied.y + occupied.height + PLACEMENT_GAP }
-        : (() => {
-            const center = centerRef.current();
-            return { x: center.x - 300, y: center.y - 220 };
-          })();
-
-      const built = buildFromIntent(intent, {
-        origin,
-        style: styleRef.current,
-        existing,
-        anchorGrid,
-        anchorBox,
-      });
-
-      if (built.elements.length === 0) {
-        throw new Error("The drawing came back empty.");
-      }
-
-      if (stale()) {
+      if (!submitted || isGenerating) {
         return;
       }
 
-      const builtIds = new Set(built.elements.map((element) => element.id));
-      const removedIds = new Set(built.removedIds);
+      const sequence = ++requestSeqRef.current;
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
 
-      aiWritingRef.current = true;
+      setIsGenerating(true);
+      setError(null);
 
-      const batchSize =
-        built.elements.length > 30 ? 4 : built.elements.length > 12 ? 3 : 2;
+      const nextHistory: AIChatEntry[] = [
+        ...history,
+        { role: "user", parts: [{ text: submitted }], hidden },
+      ];
 
-      for (let offset = 0; offset < built.elements.length; offset += batchSize) {
-        if (stale()) {
-          return;
+      const sceneForRequest = describeScene(elementsRef.current);
+      const knownIds = new Set(sceneForRequest.nodes.map((node) => node.id));
+
+      // A picture of the canvas, but only when words fall short: freehand strokes
+      // are the one thing the structured description cannot convey. Everything
+      // else (shapes, text, layout) is already in `sceneForRequest`, so skipping
+      // the image there saves its base64 payload on most turns.
+      let snapshot: string | null = null;
+      const hasDrawnMarks = elementsRef.current.some(
+        (element) => !element.isDeleted && SNAPSHOT_TOOLS.has(element.tool),
+      );
+
+      if (hasDrawnMarks) {
+        try {
+          snapshot = exportSceneToDataURL(elementsRef.current, {
+            maxDimension: SNAPSHOT_MAX_DIMENSION,
+            scale: 1.5,
+            format: "jpeg",
+            quality: SNAPSHOT_JPEG_QUALITY,
+          });
+        } catch {
+          // Rendering the snapshot must never block the request.
+          snapshot = null;
         }
+      }
 
-        const batch = built.elements.slice(offset, offset + batchSize);
-        const isFirst = offset === 0;
-        const isLast = offset + batchSize >= built.elements.length;
+      // Everything on the canvas before this turn, kept so a failed or diverged
+      // stream can be rolled back cleanly.
+      const baseElements = elementsRef.current;
+      const stale = () =>
+        requestSeqRef.current !== sequence || !mountedRef.current;
 
+      /** Put the canvas back the way it was before an incremental scene began. */
+      const restoreBase = () => {
+        applyElements(() => baseElements, {
+          commit: false,
+          broadcast: "full",
+        });
+      };
+
+      /** The world box a streamed scene maps into, matching the whole-spec build. */
+      const streamSceneFrame = (placement: string): SceneFrame => {
+        const existing = placement === "replace" ? [] : baseElements;
+        const occupied = unionBounds(existing);
+        const anchorBox = placement === "add" && occupied ? occupied : null;
+        const origin = occupied
+          ? { x: occupied.x, y: occupied.y + occupied.height + PLACEMENT_GAP }
+          : (() => {
+              const center = centerRef.current();
+              return { x: center.x - 300, y: center.y - 220 };
+            })();
+        return sceneFrame(origin, anchorBox);
+      };
+
+      /** Append one item's elements as they stream in (no commit yet). */
+      const appendStreamed = (built: Shape[], clearFirst: boolean) => {
         applyElements(
-          (previous) => {
-            if (!isFirst) {
-              return [...previous, ...batch];
-            }
-
-            const base = replacing
-              ? []
-              : previous.filter(
-                  (element) =>
-                    !builtIds.has(element.id) && !removedIds.has(element.id),
-                );
-
-            return [...base, ...batch];
-          },
+          (previous) => (clearFirst ? [...built] : [...previous, ...built]),
           {
-            commit: isLast,
-            broadcast: replacing && isFirst ? "full" : "elements",
-            changedIds: batch.map((element) => element.id),
-            deletedIds: isFirst ? built.removedIds : [],
+            commit: false,
+            // The clearing write is positional, so peers get the whole scene;
+            // later appends only carry the new elements.
+            broadcast: clearFirst ? "full" : "elements",
+            changedIds: built.map((element) => element.id),
           },
         );
+      };
 
-        if (!isLast) {
-          await delay(REVEAL_STEP_MS);
-        }
-      }
+      /**
+       * The path for everything that cannot render item by item — grids, diagrams,
+       * sequences, and any scene whose incremental parse diverged. Identical to the
+       * behaviour before streaming: build the whole thing, then reveal it in order.
+       */
+      const revealWhole = async (intent: DrawingIntent) => {
+        const replacing = intent.placement === "replace";
+        const existing = replacing ? [] : elementsRef.current;
+        const occupied = unionBounds(existing);
+        const continuing = intent.placement === "add";
 
-      placedRef.current?.(built.bounds);
-    };
+        const anchorGrid =
+          continuing && intent.kind === "grid" ? sceneForRequest.grid : null;
+        const anchorBox =
+          continuing && intent.kind === "scene" && occupied ? occupied : null;
 
-    // Incremental scene state, filled in as the stream arrives.
-    let didStreamScene = false;
-    let clearedForReplace = false;
-    let frame: SceneFrame | null = null;
-    let rawSeen = 0;
-    let builtItemCount = 0;
-    const streamedElements: Shape[] = [];
+        const origin = occupied
+          ? { x: occupied.x, y: occupied.y + occupied.height + PLACEMENT_GAP }
+          : (() => {
+              const center = centerRef.current();
+              return { x: center.x - 300, y: center.y - 220 };
+            })();
 
-    try {
-      const response = await fetch("/api/generate-drawing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          prompt: submitted,
-          // The canvas travels as the structure it represents; a picture only
-          // when there is drawing on it that the description cannot carry.
-          scene: sceneForRequest,
-          image: snapshot,
-          history: nextHistory,
-          stream: true,
-          ...(architectureModeRef.current ? { mode: "system" } : {}),
-        }),
-      });
+        const built = buildFromIntent(intent, {
+          origin,
+          style: styleRef.current,
+          existing,
+          anchorGrid,
+          anchorBox,
+        });
 
-      if (!response.ok) {
-        // Validation failures happen before streaming starts, so they still
-        // arrive as JSON.
-        const data = await response.json().catch(() => null);
-        throw new Error(
-          (data && typeof data.error === "string" && data.error) ||
-            `Request failed with status ${response.status}`,
-        );
-      }
-
-      if (!response.body) {
-        throw new Error("The assistant returned an empty response.");
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let raw = "";
-      let kind: string | null = null;
-      let placement: string | null = null;
-
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) {
-          break;
+        if (built.elements.length === 0) {
+          throw new Error("The drawing came back empty.");
         }
 
-        // A newer request (or unmount) took over: stop touching the canvas.
         if (stale()) {
-          await reader.cancel().catch(() => {});
           return;
         }
 
-        raw += decoder.decode(value, { stream: true });
+        const builtIds = new Set(built.elements.map((element) => element.id));
+        const removedIds = new Set(built.removedIds);
 
-        if (!kind) {
-          kind = readStringField(raw, "kind");
+        aiWritingRef.current = true;
+
+        const batchSize =
+          built.elements.length > 30 ? 4 : built.elements.length > 12 ? 3 : 2;
+
+        for (
+          let offset = 0;
+          offset < built.elements.length;
+          offset += batchSize
+        ) {
+          if (stale()) {
+            return;
+          }
+
+          const batch = built.elements.slice(offset, offset + batchSize);
+          const isFirst = offset === 0;
+          const isLast = offset + batchSize >= built.elements.length;
+
+          applyElements(
+            (previous) => {
+              if (!isFirst) {
+                return [...previous, ...batch];
+              }
+
+              const base = replacing
+                ? []
+                : previous.filter(
+                    (element) =>
+                      !builtIds.has(element.id) && !removedIds.has(element.id),
+                  );
+
+              return [...base, ...batch];
+            },
+            {
+              commit: isLast,
+              broadcast: replacing && isFirst ? "full" : "elements",
+              changedIds: batch.map((element) => element.id),
+              deletedIds: isFirst ? built.removedIds : [],
+            },
+          );
+
+          if (!isLast) {
+            await delay(REVEAL_STEP_MS);
+          }
         }
-        if (!placement) {
-          placement = readStringField(raw, "placement");
+
+        placedRef.current?.(built.bounds);
+      };
+
+      // Incremental scene state, filled in as the stream arrives.
+      let didStreamScene = false;
+      let clearedForReplace = false;
+      let frame: SceneFrame | null = null;
+      let rawSeen = 0;
+      let builtItemCount = 0;
+      const streamedElements: Shape[] = [];
+
+      try {
+        const response = await fetch("/api/generate-drawing", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            prompt: submitted,
+            // The canvas travels as the structure it represents; a picture only
+            // when there is drawing on it that the description cannot carry.
+            scene: sceneForRequest,
+            image: snapshot,
+            history: nextHistory,
+            stream: true,
+            ...(architectureModeRef.current ? { mode: "system" } : {}),
+          }),
+        });
+
+        if (!response.ok) {
+          // Validation failures happen before streaming starts, so they still
+          // arrive as JSON.
+          const data = await response.json().catch(() => null);
+          throw new Error(
+            (data && typeof data.error === "string" && data.error) ||
+              `Request failed with status ${response.status}`,
+          );
+        }
+
+        if (!response.body) {
+          throw new Error("The assistant returned an empty response.");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let raw = "";
+        let kind: string | null = null;
+        let placement: string | null = null;
+
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+
+          // A newer request (or unmount) took over: stop touching the canvas.
+          if (stale()) {
+            await reader.cancel().catch(() => {});
+            return;
+          }
+
+          raw += decoder.decode(value, { stream: true });
+
+          if (!kind) {
+            kind = readStringField(raw, "kind");
+          }
+          if (!placement) {
+            placement = readStringField(raw, "placement");
+          }
+
+          /*
+           * Only scenes render as they stream. A grid's cell size depends on the
+           * widest cell across the whole board, and diagrams and sequences lay out
+           * globally — none can be placed one item at a time without later items
+           * shifting earlier ones, so they wait for the full reply and reveal then.
+           */
+          if (kind === "scene" && placement && !frame) {
+            frame = streamSceneFrame(placement);
+            didStreamScene = true;
+            aiWritingRef.current = true;
+          }
+
+          if (didStreamScene && frame && placement) {
+            const scan = scanArray(raw, "items");
+
+            for (const candidate of scan.objects.slice(rawSeen)) {
+              rawSeen += 1;
+
+              // Stop at the same ceiling the whole-spec parser uses, so the
+              // streamed set matches the authoritative one exactly.
+              if (builtItemCount >= MAX_SCENE_ITEMS) {
+                continue;
+              }
+
+              const item = parseSceneItem(candidate);
+              if (!item) {
+                continue;
+              }
+
+              const built = placeSceneItem(item, frame, styleRef.current);
+              if (built.length === 0) {
+                continue;
+              }
+
+              const clearFirst = !clearedForReplace && placement === "replace";
+              streamedElements.push(...built);
+              appendStreamed(built, clearFirst);
+              clearedForReplace = clearedForReplace || placement === "replace";
+              builtItemCount += 1;
+            }
+          }
+        }
+
+        raw += decoder.decode();
+
+        if (stale()) {
+          return;
+        }
+
+        // The authoritative result is the full-text parse under the response
+        // schema. Streaming was a preview; this is what gets confirmed.
+        let parsed: unknown = null;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          parsed = null;
+        }
+
+        const intent = parsed ? parseDrawingIntent(parsed, knownIds) : null;
+
+        if (!intent) {
+          if (didStreamScene) {
+            restoreBase();
+          }
+          throw new Error("The assistant returned nothing drawable.");
+        }
+
+        if (stale()) {
+          return;
         }
 
         /*
-         * Only scenes render as they stream. A grid's cell size depends on the
-         * widest cell across the whole board, and diagrams and sequences lay out
-         * globally — none can be placed one item at a time without later items
-         * shifting earlier ones, so they wait for the full reply and reveal then.
+         * The model can decline to draw ("wait"): the automatic turn used to make
+         * it respond to every pause, so it added shapes while the user was still
+         * arranging their own work. A wait rolls back any streamed preview and
+         * records only its words.
          */
-        if (kind === "scene" && placement && !frame) {
-          frame = streamSceneFrame(placement);
-          didStreamScene = true;
-          aiWritingRef.current = true;
-        }
-
-        if (didStreamScene && frame && placement) {
-          const scan = scanArray(raw, "items");
-
-          for (const candidate of scan.objects.slice(rawSeen)) {
-            rawSeen += 1;
-
-            // Stop at the same ceiling the whole-spec parser uses, so the
-            // streamed set matches the authoritative one exactly.
-            if (builtItemCount >= MAX_SCENE_ITEMS) {
-              continue;
-            }
-
-            const item = parseSceneItem(candidate);
-            if (!item) {
-              continue;
-            }
-
-            const built = placeSceneItem(item, frame, styleRef.current);
-            if (built.length === 0) {
-              continue;
-            }
-
-            const clearFirst = !clearedForReplace && placement === "replace";
-            streamedElements.push(...built);
-            appendStreamed(built, clearFirst);
-            clearedForReplace = clearedForReplace || placement === "replace";
-            builtItemCount += 1;
+        if (intent.action === "wait") {
+          if (didStreamScene) {
+            restoreBase();
           }
+          setHistory([
+            ...nextHistory,
+            {
+              role: "model",
+              parts: [{ text: intent.summary || intent.title || "(waiting)" }],
+            },
+          ]);
+          setPrompt("");
+          return;
         }
-      }
 
-      raw += decoder.decode();
-
-      if (stale()) {
-        return;
-      }
-
-      // The authoritative result is the full-text parse under the response
-      // schema. Streaming was a preview; this is what gets confirmed.
-      let parsed: unknown = null;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        parsed = null;
-      }
-
-      const intent = parsed ? parseDrawingIntent(parsed, knownIds) : null;
-
-      if (!intent) {
-        if (didStreamScene) {
-          restoreBase();
-        }
-        throw new Error("The assistant returned nothing drawable.");
-      }
-
-      if (stale()) {
-        return;
-      }
-
-      /*
-       * The model can decline to draw ("wait"): the automatic turn used to make
-       * it respond to every pause, so it added shapes while the user was still
-       * arranging their own work. A wait rolls back any streamed preview and
-       * records only its words.
-       */
-      if (intent.action === "wait") {
-        if (didStreamScene) {
-          restoreBase();
-        }
         setHistory([
           ...nextHistory,
           {
             role: "model",
-            parts: [{ text: intent.summary || intent.title || "(waiting)" }],
+            parts: [{ text: intent.summary || intent.title || "Done." }],
           },
         ]);
-        setPrompt("");
-        return;
-      }
 
-      setHistory([
-        ...nextHistory,
-        {
-          role: "model",
-          parts: [{ text: intent.summary || intent.title || "Done." }],
-        },
-      ]);
-
-      /*
-       * The streamed scene was built with the same validator, frame and builders
-       * as the authoritative one and in the same order, so when the item counts
-       * agree the two are identical but for ids and seeds. Keep what is already
-       * on the canvas and commit it as a single undo step — no rebuild, no flash.
-       */
-      if (
-        didStreamScene &&
-        intent.kind === "scene" &&
-        builtItemCount === intent.scene.items.length &&
-        streamedElements.length > 0
-      ) {
-        commit();
-        const bounds = unionBounds(streamedElements);
-        if (bounds) {
-          placedRef.current?.(bounds);
+        /*
+         * The streamed scene was built with the same validator, frame and builders
+         * as the authoritative one and in the same order, so when the item counts
+         * agree the two are identical but for ids and seeds. Keep what is already
+         * on the canvas and commit it as a single undo step — no rebuild, no flash.
+         */
+        if (
+          didStreamScene &&
+          intent.kind === "scene" &&
+          builtItemCount === intent.scene.items.length &&
+          streamedElements.length > 0
+        ) {
+          commit();
+          const bounds = unionBounds(streamedElements);
+          if (bounds) {
+            placedRef.current?.(bounds);
+          }
+          setPrompt("");
+          return;
         }
+
+        // Fallback: a kind that does not stream, or a scene that diverged. Undo any
+        // partial scene first, then reveal the authoritative build as before.
+        if (didStreamScene) {
+          restoreBase();
+        }
+
+        await revealWhole(intent);
         setPrompt("");
-        return;
-      }
+      } catch (caught) {
+        if (caught instanceof DOMException && caught.name === "AbortError") {
+          return;
+        }
+        if (requestSeqRef.current !== sequence) {
+          return;
+        }
+        // Never leave a half-drawn, uncommitted scene behind.
+        if (didStreamScene) {
+          restoreBase();
+        }
+        setError(caught instanceof Error ? caught.message : "Unknown error");
+      } finally {
+        if (requestSeqRef.current === sequence && mountedRef.current) {
+          setIsGenerating(false);
+        }
 
-      // Fallback: a kind that does not stream, or a scene that diverged. Undo any
-      // partial scene first, then reveal the authoritative build as before.
-      if (didStreamScene) {
-        restoreBase();
+        // Let the trailing scene change settle before edits count as the user's.
+        window.setTimeout(() => {
+          aiWritingRef.current = false;
+        }, AI_WRITE_SETTLE_MS);
       }
-
-      await revealWhole(intent);
-      setPrompt("");
-    } catch (caught) {
-      if (caught instanceof DOMException && caught.name === "AbortError") {
-        return;
-      }
-      if (requestSeqRef.current !== sequence) {
-        return;
-      }
-      // Never leave a half-drawn, uncommitted scene behind.
-      if (didStreamScene) {
-        restoreBase();
-      }
-      setError(caught instanceof Error ? caught.message : "Unknown error");
-    } finally {
-      if (requestSeqRef.current === sequence && mountedRef.current) {
-        setIsGenerating(false);
-      }
-
-      // Let the trailing scene change settle before edits count as the user's.
-      window.setTimeout(() => {
-        aiWritingRef.current = false;
-      }, AI_WRITE_SETTLE_MS);
-    }
     },
     [applyElements, commit, elementsRef, history, isGenerating, prompt],
   );
@@ -672,7 +679,7 @@ export const useAIAssistant = ({
 
       void generateRef.current?.({
         prompt:
-          "The user has paused. Look at what changed and decide: if something you could draw would clearly help now, draw it; otherwise reply with action \"wait\" and a short note.",
+          'The user has paused. Look at what changed and decide: if something you could draw would clearly help now, draw it; otherwise reply with action "wait" and a short note.',
         hidden: true,
       });
     }, AUTO_RESPOND_DELAY_MS);
