@@ -24,7 +24,7 @@ import { ACCENT_COLORS, type NodeAccent } from "./graph";
 import type { GridSpec } from "./grid";
 import type { SceneItem, SceneSpec } from "./scene";
 import type { SequenceSpec } from "./sequence";
-import { buildSceneFromGraph, type BuiltScene } from "./buildScene";
+import { buildSceneFromGraph, buildSceneFromSystemGraph, type BuiltScene } from "./buildScene";
 import type { DetectedGrid } from "./describeScene";
 import type { DrawingIntent } from "./intent";
 
@@ -826,6 +826,8 @@ export const buildFromIntent = (
       return buildSequence(intent.sequence, options);
     case "scene":
       return buildScene(intent.scene, options);
+    case "system":
+      return buildSceneFromSystemGraph(intent.system, options);
     case "diagram":
     default:
       return buildSceneFromGraph(intent.diagram, {

@@ -296,8 +296,14 @@ export const routeElbow = ({
 
   // Obstacles are blocked at their real size; the grid lines sit a clearance
   // away, so routes never graze a shape.
-  const blocked = obstacles.map((box) => inflate(box, 1));
+  const rawBlocked = obstacles.map((box) => inflate(box, 1));
   const padded = obstacles.map((box) => inflate(box, clearance));
+
+  // Exclude any obstacle that encloses either dongle so A* search is never
+  // blocked from finding a valid path around all remaining obstacles.
+  const blocked = rawBlocked.filter(
+    (box) => !isInside(startDongle, box) && !isInside(endDongle, box),
+  );
 
   const xs: number[] = [startDongle.x, endDongle.x];
   const ys: number[] = [startDongle.y, endDongle.y];
@@ -307,13 +313,15 @@ export const routeElbow = ({
     ys.push(box.y, box.y + box.height, box.y + box.height / 2);
   }
 
-  // A lane through the middle of the gap between the two obstacles, which is
-  // what makes a route through a tight space look deliberate.
-  if (padded.length >= 2) {
-    xs.push((padded[0].x + padded[0].width + padded[1].x) / 2);
-    xs.push((padded[1].x + padded[1].width + padded[0].x) / 2);
-    ys.push((padded[0].y + padded[0].height + padded[1].y) / 2);
-    ys.push((padded[1].y + padded[1].height + padded[0].y) / 2);
+  // Lanes through the gaps between obstacles, which is what makes a route
+  // through crowded shapes look deliberate.
+  for (let i = 0; i < padded.length; i += 1) {
+    for (let j = i + 1; j < padded.length; j += 1) {
+      xs.push((padded[i].x + padded[i].width + padded[j].x) / 2);
+      xs.push((padded[j].x + padded[j].width + padded[i].x) / 2);
+      ys.push((padded[i].y + padded[i].height + padded[j].y) / 2);
+      ys.push((padded[j].y + padded[j].height + padded[i].y) / 2);
+    }
   }
 
   const gridX = uniqueSorted(xs);
@@ -433,15 +441,38 @@ export const getFacingHeadings = (
   const gapY =
     dy >= 0 ? to.y - (from.y + from.height) : from.y - (to.y + to.height);
 
-  // Route along the axis where the boxes are actually separated. When both are
-  // separated, follow the larger separation.
-  const horizontal = gapX >= 0 && (gapY < 0 || gapX >= gapY);
-
-  if (horizontal) {
+  // If the boxes overlap along one axis, connect across the axis where they are separated.
+  if (gapX < 0 && gapY >= 0) {
+    return dy >= 0
+      ? { start: "down", end: "up" }
+      : { start: "up", end: "down" };
+  }
+  if (gapY < 0 && gapX >= 0) {
     return dx >= 0
       ? { start: "right", end: "left" }
       : { start: "left", end: "right" };
   }
 
-  return dy >= 0 ? { start: "down", end: "up" } : { start: "up", end: "down" };
+  // When separated on both axes, prefer vertical connections (down->up / up->down)
+  // when vertical tier distance is significant, matching top-to-bottom diagram flow.
+  if (gapY >= 0 && gapX >= 0) {
+    if (gapY >= 30 && gapX < gapY * 2.5) {
+      return dy >= 0
+        ? { start: "down", end: "up" }
+        : { start: "up", end: "down" };
+    }
+    return dx >= 0
+      ? { start: "right", end: "left" }
+      : { start: "left", end: "right" };
+  }
+
+  // Overlapping or diagonal fallback: compare center deltas
+  if (Math.abs(dy) >= Math.abs(dx)) {
+    return dy >= 0
+      ? { start: "down", end: "up" }
+      : { start: "up", end: "down" };
+  }
+  return dx >= 0
+    ? { start: "right", end: "left" }
+    : { start: "left", end: "right" };
 };

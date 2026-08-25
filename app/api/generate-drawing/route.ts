@@ -29,6 +29,12 @@ import {
   MESSAGE_KINDS,
 } from "../../services/ai/sequence";
 import {
+  MAX_SYSTEM_EDGES,
+  MAX_SYSTEM_NODES,
+  MAX_ZONES,
+  SYSTEM_COMPONENT_TYPES,
+} from "../../services/ai/system";
+import {
   EMPTY_SCENE,
   formatSceneForPrompt,
   type SceneSummary,
@@ -62,7 +68,7 @@ const RESPONSE_SCHEMA: Record<string, unknown> = {
       type: "string",
       enum: INTENT_KINDS,
       description:
-        "Which payload you filled in. 'sequence' for an ordered exchange between participants over time — most \"how does X work\" questions; 'scene' for a picture of something or a spatial layout; 'grid' for rows and columns (boards, tables, calendars, matrices); 'diagram' for abstract things joined by arrows, with no time axis and no picture.",
+        "Which payload you filled in. 'sequence' for an ordered exchange between participants over time — most \"how does X work\" questions; 'system' for a system design or software architecture with typed infrastructure components; 'scene' for a picture of something or a spatial layout; 'grid' for rows and columns (boards, tables, calendars, matrices); 'diagram' for abstract things joined by arrows, with no time axis and no picture.",
     },
     title: {
       type: "string",
@@ -285,6 +291,94 @@ const RESPONSE_SCHEMA: Record<string, unknown> = {
       required: ["participants", "messages"],
     },
 
+    system: {
+      type: "object",
+      description:
+        "Fill this only when kind is 'system': a system design or software architecture — services, data stores, load balancers, queues, caches. Tiers, band placement and zone boxes are computed for you; give only the typed components and how they connect.",
+      properties: {
+        direction: {
+          type: "string",
+          enum: ["down", "right"],
+          description:
+            "'down' (default) stacks tiers top to bottom — clients at the top, data stores at the bottom. 'right' flows left to right.",
+        },
+        nodes: {
+          type: "array",
+          description: `The components. At most ${MAX_SYSTEM_NODES}.`,
+          items: {
+            type: "object",
+            properties: {
+              id: {
+                type: "string",
+                description:
+                  "Short identifier referenced by edges and zones. Reuse an existing component's exact label to attach to it.",
+              },
+              label: {
+                type: "string",
+                description:
+                  "Name shown in the component, e.g. 'API Gateway', 'Postgres', 'Redis'. One to three words.",
+              },
+              type: {
+                type: "string",
+                enum: SYSTEM_COMPONENT_TYPES,
+                description:
+                  "What the component is. This decides its tier, shape and colour: clients front the design, cdn/firewall/load-balancer/gateway form the edge tier, service/queue/cache do the work, database/storage hold the data, external is anything outside your system.",
+              },
+              tier: {
+                type: "number",
+                description:
+                  "Optional override 0-5 for the band the component sits in. Leave out unless the default tiering from 'type' is wrong for this design.",
+              },
+            },
+            required: ["id", "label", "type"],
+          },
+        },
+        edges: {
+          type: "array",
+          description: `The connections between components. At most ${MAX_SYSTEM_EDGES}.`,
+          items: {
+            type: "object",
+            properties: {
+              from: { type: "string", description: "Source component id." },
+              to: { type: "string", description: "Target component id." },
+              label: {
+                type: "string",
+                description:
+                  "Protocol or payload on the wire, e.g. 'HTTPS', 'gRPC', 'events'. Empty if obvious.",
+              },
+              dashed: {
+                type: "boolean",
+                description:
+                  "True for asynchronous or optional links — fire-and-forget events onto a queue, replication, fallbacks.",
+              },
+            },
+            required: ["from", "to", "label", "dashed"],
+          },
+        },
+        zones: {
+          type: "array",
+          description: `Named group boxes drawn behind their members — trust boundaries like 'VPC', 'CDN edge', 'Third party'. At most ${MAX_ZONES}. Each component belongs to at most one zone.`,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Zone identifier." },
+              label: {
+                type: "string",
+                description: "Name shown on the group box, e.g. 'VPC'.",
+              },
+              contains: {
+                type: "array",
+                description: "Ids of the components inside this zone.",
+                items: { type: "string" },
+              },
+            },
+            required: ["id", "label", "contains"],
+          },
+        },
+      },
+      required: ["nodes", "edges", "zones"],
+    },
+
     scene: {
       type: "object",
       description:
@@ -384,6 +478,7 @@ flowchart — most questions are not flowcharts.
 - Is it a thing with PARTS or a PICTURE of something?           -> "scene"
 - Is it arranged in ROWS AND COLUMNS?                           -> "grid"
 - Is it a SEQUENCE of exchanges between participants over time?  -> "sequence"
+- Is it a SYSTEM DESIGN or ARCHITECTURE with infrastructure?     -> "system"
 - Is it ABSTRACT THINGS CONNECTED to each other?                -> "diagram"
 
 Worked examples, because this is where it usually goes wrong:
@@ -395,13 +490,47 @@ Worked examples, because this is where it usually goes wrong:
 - "draw a house" / "a cat" / "a rocket" -> scene
 - "a UI mock-up" / "a floor plan"    -> scene
 - "tic-tac-toe" / "a calendar" / "compare REST and GraphQL" -> grid
-- "our microservice architecture"    -> diagram
+- "design a URL shortener"           -> system
+- "design a chat app like WhatsApp"  -> system
+- "our AWS architecture"             -> system
+- "add rate limiting to the API"     -> system (when services are on the canvas)
+- "our microservice architecture"    -> system
 - "the steps to onboard a customer"  -> diagram
 - "an org chart"                     -> diagram
 
 "how does X work" is a sequence far more often than a flowchart. Reach for
-"diagram" only when the answer really is boxes joined by arrows with no time
-axis and no picture.
+"system" whenever the request is about building software at scale — scalability,
+reliability, caching, load balancing, data stores, queues. Reach for "diagram"
+only when the answer is boxes joined by arrows with no time axis, no picture and
+no infrastructure vocabulary.
+
+"system" — typed components for a system design or architecture. Tiers, band
+placement, shapes and colours are computed from each component's type; you only
+describe what exists and how it connects.
+- Types organize the layout into 6 clean tiers from front to back:
+  1. 'client' (tier 0)
+  2. 'cdn', 'firewall' (tier 1 - perimeter)
+  3. 'load-balancer', 'gateway' (tier 2 - entry point)
+  4. 'service' (tier 3 - backend business logic & microservices)
+  5. 'queue', 'cache' (tier 4 - asynchronous messaging & in-memory caches)
+  6. 'database', 'storage', 'external' (tier 5 - persistent storage & third parties)
+- Name real technologies in labels where the design implies them: 'Redis' not
+  'cache layer', 'Postgres' not 'database', 'Kafka' not 'queue'. Keep labels to one to three words.
+- Connect along the request path: client -> gateway -> service -> cache / queue -> database.
+- IMPORTANT for clean diagrams: do NOT draw horizontal peer-to-peer connections between
+  sibling microservices in tier 3 (e.g. do not connect Shorten Service <-> Redirect Service <-> KeyGen).
+  The Gateway routes to the appropriate service, and each service communicates downward
+  with its cache, queue, or database.
+- 'dashed: true' for asynchronous or optional links — events onto a queue,
+  background workers, replication, fallback paths.
+- Use zones for logical clusters: 'VPC', 'Microservices', 'Data Tier'.
+  Zone members should be in the same or adjacent tiers so group boxes wrap cleanly.
+  Every component belongs to at most one zone.
+- Aim for 5-9 components. A clean architecture diagram has distinct tiers and
+  focused connections rather than an all-to-all spiderweb.
+- To add a component between two existing ones ("put a Redis between API and
+  DB"): list only the new node, edges API->Redis and Redis->DB, and mention the
+  old direct link in your summary so it can be removed.
 
 "sequence" — participants and ordered messages. Lifelines, spacing and labels are
 computed for you.
@@ -436,8 +565,8 @@ about how something LOOKS or is physically arranged.
   are distinguishable, one arrow per force labelled with its symbol, a dashed
   line for the rest position, and a marker at the pivot.
 
-"diagram" — abstract things connected to abstract things: architectures, org
-charts, state machines, mind maps, decision trees, process steps.
+"diagram" — abstract things connected to abstract things: org charts, state
+machines, mind maps, decision trees, process steps.
 - Labels: one to four words, under 24 characters. The label decides how big its
   box is drawn.
 - Edge direction matters: cause to effect, caller to callee, step to next step.
@@ -506,6 +635,12 @@ interface RequestBody {
    * the client. When absent the reply comes back parsed as `{ intent }`.
    */
   stream?: unknown;
+  /**
+   * Optional client-side hint. "system" biases the model towards the system
+   * design kind — the Architecture toggle in the panel. Unknown values are
+   * ignored; the model still decides.
+   */
+  mode?: unknown;
 }
 
 /**
@@ -659,6 +794,10 @@ export async function POST(request: NextRequest) {
   const history = parseHistory(body.history);
   const image = parseInlineImage(body.image);
   const wantsStream = body.stream === true;
+  const modeHint =
+    body.mode === "system"
+      ? "The user has Architecture mode on: prefer the 'system' kind for this request unless it is clearly something else."
+      : null;
 
   try {
     const call: ModelCall = {
@@ -669,6 +808,7 @@ export async function POST(request: NextRequest) {
           ? "The attached image shows the canvas as it looks right now."
           : null,
         `Current canvas:\n${formatSceneForPrompt(scene)}`,
+        ...(modeHint ? [modeHint] : []),
         `Request: ${prompt}`,
       ]
         .filter(Boolean)

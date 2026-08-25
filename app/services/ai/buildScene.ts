@@ -26,8 +26,19 @@ import {
   measureTextWidth,
   wrapText,
 } from "../canvas/textMeasure";
-import { ACCENT_COLORS, type DiagramGraph, type NodeShape } from "./graph";
+import {
+  ACCENT_COLORS,
+  type DiagramGraph,
+  type NodeAccent,
+  type NodeShape,
+} from "./graph";
 import { layoutGraph, type LaidOutNode } from "./layout";
+import {
+  layoutSystemGraph,
+  type LaidOutSystemNode,
+  type SystemLayout,
+} from "./systemLayout";
+import type { SystemSpec, SystemComponentType } from "./system";
 
 const SHAPE_TOOLS: Record<NodeShape, "Square" | "Circle" | "Diamond"> = {
   rectangle: "Square",
@@ -58,6 +69,12 @@ const NODE_PADDING = 14;
 
 const MIN_NODE_WIDTH = 120;
 const MIN_NODE_HEIGHT = 56;
+
+/** Zone group-box labels are quieter than node labels. */
+const ZONE_LABEL_FONT_SIZE = 13;
+
+/** Inset of a zone's label from the zone's top-left corner. */
+const ZONE_LABEL_OFFSET = 12;
 
 /**
  * The box a node needs to hold its label.
@@ -342,5 +359,235 @@ export const buildSceneFromGraph = (
       height: layout.height,
     },
     removedIds,
+  };
+};
+
+/* ------------------------------------------------------------------ *
+ * System design
+ * ------------------------------------------------------------------ */
+
+/**
+ * What each component type looks like.
+ *
+ * Data stores read as circles, queues as diamonds — the same conventions the
+ * flowchart vocabulary already taught users — and every type carries a fixed
+ * accent, so a cache is always red and a database always purple across every
+ * drawing. Consistency is what makes the pictures legible at a glance.
+ */
+const SYSTEM_SHAPE: Record<SystemComponentType, NodeShape> = {
+  client: "rectangle",
+  cdn: "rectangle",
+  firewall: "rectangle",
+  "load-balancer": "rectangle",
+  gateway: "rectangle",
+  service: "rectangle",
+  queue: "rectangle",
+  cache: "ellipse",
+  database: "ellipse",
+  storage: "ellipse",
+  external: "rectangle",
+};
+
+const SYSTEM_ACCENT: Record<SystemComponentType, NodeAccent> = {
+  client: "green",
+  cdn: "blue",
+  firewall: "yellow",
+  "load-balancer": "blue",
+  gateway: "blue",
+  service: "blue",
+  queue: "yellow",
+  cache: "red",
+  database: "purple",
+  storage: "purple",
+  external: "none",
+};
+
+/** A system node as the generic graph node the shared placement code expects. */
+const toGraphNode = (node: LaidOutSystemNode) => ({
+  id: node.id,
+  label: node.label,
+  shape: SYSTEM_SHAPE[node.type],
+  accent: SYSTEM_ACCENT[node.type],
+});
+
+/**
+ * Build the elements for a system design: typed containers with bound labels,
+ * bound elbow arrows between them, and zone group boxes drawn behind their
+ * members. Zones are plain unfilled squares placed first in draw order, so they
+ * sit behind everything without needing a new element type.
+ */
+export const buildSceneFromSystemGraph = (
+  spec: SystemSpec,
+  { origin, style = DEFAULT_STYLE, existing = [] }: BuildSceneOptions,
+): BuiltScene => {
+  const layout: SystemLayout = layoutSystemGraph(spec, {
+    measureNode: (node) =>
+      measureNodeFor(style)({
+        label: node.label,
+        shape: SYSTEM_SHAPE[node.type],
+      }),
+  });
+
+  const created: Shape[] = [];
+
+  // Zones go in first so every component and connector draws on top of them.
+  for (const zone of layout.zones) {
+    const box = createElement(
+      "Square",
+      {
+        x: origin.x + zone.x,
+        y: origin.y + zone.y,
+        width: zone.width,
+        height: zone.height,
+      },
+      style.stroke,
+      {
+        ...style,
+        stroke: style.stroke,
+        fill: "transparent",
+        strokeStyle: "dashed",
+        // Group boxes should whisper, not shout.
+        opacity: 0.6,
+      },
+    )!;
+
+    const label = createElement(
+      "Text",
+      {
+        text: zone.label,
+        fontSize: ZONE_LABEL_FONT_SIZE,
+      },
+      style.stroke,
+      { ...style, stroke: style.stroke, fontSize: ZONE_LABEL_FONT_SIZE },
+    )!;
+
+    // Anchored to the zone's top-left inside its padding.
+    created.push(
+      mutateElement(box, {}),
+      mutateElement(label, {
+        x: origin.x + zone.x + ZONE_LABEL_OFFSET,
+        y: origin.y + zone.y + ZONE_LABEL_OFFSET - label.height / 2,
+      }),
+    );
+  }
+
+  /** Graph node id -> the container element that represents it. */
+  const containerFor = new Map<string, Shape>();
+
+  for (const node of layout.nodes) {
+    const accent = ACCENT_COLORS[SYSTEM_ACCENT[node.type]];
+    const graphNode = toGraphNode(node);
+
+    const container = createElement(
+      SHAPE_TOOLS[graphNode.shape],
+      {
+        x: origin.x + node.x,
+        y: origin.y + node.y,
+        width: node.width,
+        height: node.height,
+      },
+      accent.stroke,
+      {
+        ...style,
+        stroke: accent.stroke,
+        fill: accent.fill,
+        fillStyle: "solid",
+      },
+    )!;
+
+    const label = createElement(
+      "Text",
+      {
+        text: node.label,
+        fontSize: LABEL_FONT_SIZE,
+        containerId: container.id,
+      },
+      accent.stroke,
+      { ...style, stroke: accent.stroke, fontSize: LABEL_FONT_SIZE },
+    ) as TextShape;
+
+    const fitted = fitLabelToContainer(label, container);
+
+    created.push(
+      mutateElement(fitted.container, {
+        boundElements: [{ id: fitted.label.id, type: "text" }],
+      }),
+      fitted.label,
+    );
+
+    containerFor.set(node.id, fitted.container);
+  }
+
+  /**
+   * Arrow plus the two endpoints it joins, resolved before any binding so an
+   * unresolvable edge is skipped rather than mis-binding a later pair.
+   */
+  const connectors: Array<{ arrowId: string; from: Shape; to: Shape; dashed: boolean }> = [];
+
+  for (const edge of spec.edges) {
+    const from = containerFor.get(edge.from);
+    const to = containerFor.get(edge.to);
+
+    if (!from || !to || from.id === to.id) {
+      continue;
+    }
+
+    const fromCenter = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+    const toCenter = { x: to.x + to.width / 2, y: to.y + to.height / 2 };
+
+    const arrow = createElement(
+      "Arrow",
+      {
+        x1: fromCenter.x,
+        y1: fromCenter.y,
+        x2: toCenter.x,
+        y2: toCenter.y,
+        strokeStyle: edge.dashed ? "dashed" : "solid",
+        edgeStyle: "elbow",
+      },
+      DEFAULT_STYLE.stroke,
+      {
+        ...style,
+        stroke: DEFAULT_STYLE.stroke,
+        strokeStyle: edge.dashed ? "dashed" : "solid",
+      },
+    )!;
+
+    created.push(arrow);
+    connectors.push({ arrowId: arrow.id, from, to, dashed: edge.dashed });
+  }
+
+  let working: Shape[] = [...existing, ...created];
+
+  const CONNECTOR_GAP = 8;
+
+  for (const { arrowId, from, to } of connectors) {
+    working = applyBindings(working, arrowId, {
+      start: createBinding(
+        from,
+        { x: from.x + from.width / 2, y: from.y + from.height / 2 },
+        CONNECTOR_GAP,
+      ),
+      end: createBinding(
+        to,
+        { x: to.x + to.width / 2, y: to.y + to.height / 2 },
+        CONNECTOR_GAP,
+      ),
+    });
+  }
+
+  // Bindings replace elements with updated copies, so the result must come
+  // from `working` rather than `created` — otherwise the arrows go out unbound.
+  const createdIds = new Set(created.map((element) => element.id));
+
+  return {
+    elements: working.filter((element) => createdIds.has(element.id)),
+    bounds: {
+      x: origin.x,
+      y: origin.y,
+      width: layout.width,
+      height: layout.height,
+    },
+    removedIds: [],
   };
 };

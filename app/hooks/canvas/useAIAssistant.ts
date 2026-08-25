@@ -162,6 +162,12 @@ export interface AIAssistant {
   /** When on, the assistant takes its turn as soon as the canvas settles. */
   autoRespond: boolean;
   setAutoRespond: (autoRespond: boolean) => void;
+  /**
+   * When on, requests bias towards the system design kind — typed components,
+   * tiered layout. A hint only; the model still decides.
+   */
+  architectureMode: boolean;
+  setArchitectureMode: (architectureMode: boolean) => void;
   /** Called when the *user* changed the canvas, to schedule an automatic turn. */
   notifyUserEdit: () => void;
 }
@@ -180,6 +186,11 @@ export const useAIAssistant = ({
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [autoRespond, setAutoRespond] = useState(true);
+  const [architectureMode, setArchitectureMode] = useState(false);
+
+  /** Read inside `generate` without making it depend on the toggle. */
+  const architectureModeRef = useRef(architectureMode);
+  architectureModeRef.current = architectureMode;
 
   const storageKey = useMemo(() => storageKeyFor(roomId), [roomId]);
   const historyLoadedRef = useRef(false);
@@ -435,6 +446,7 @@ export const useAIAssistant = ({
           image: snapshot,
           history: nextHistory,
           stream: true,
+          ...(architectureModeRef.current ? { mode: "system" } : {}),
         }),
       });
 
@@ -700,6 +712,8 @@ export const useAIAssistant = ({
     resetConversation,
     autoRespond,
     setAutoRespond,
+    architectureMode,
+    setArchitectureMode,
     notifyUserEdit,
   };
 };

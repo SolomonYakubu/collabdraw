@@ -49,7 +49,7 @@ export const MIN_BINDING_GAP = 4;
 const CORNER_RADIUS = 16;
 
 /** Most shapes an elbow will try to route around, for predictable cost. */
-const MAX_OBSTACLES = 6;
+const MAX_OBSTACLES = 16;
 
 export const pointsToFlat = (points: readonly Point[]): number[] => {
   const flat: number[] = [];
@@ -327,12 +327,33 @@ const collectObstacles = (
       boundIds.has(candidate.id) ||
       !isBindableShape(candidate) ||
       // A label inside a shape is not an obstacle in its own right.
-      (candidate.tool === "Text" && candidate.containerId)
+      (candidate.tool === "Text" && candidate.containerId) ||
+      // Group/zone boxes behind shapes are not obstacles to route around.
+      (candidate.opacity !== undefined &&
+        candidate.opacity < 0.8 &&
+        candidate.strokeStyle === "dashed")
     ) {
       continue;
     }
 
     const bounds = getElementBounds(candidate);
+
+    // If candidate encloses either endpoint (e.g. group container/zone), skip it.
+    const enclosesStart =
+      ends.start.x > bounds.x &&
+      ends.start.x < bounds.x + bounds.width &&
+      ends.start.y > bounds.y &&
+      ends.start.y < bounds.y + bounds.height;
+    const enclosesEnd =
+      ends.end.x > bounds.x &&
+      ends.end.x < bounds.x + bounds.width &&
+      ends.end.y > bounds.y &&
+      ends.end.y < bounds.y + bounds.height;
+
+    if (enclosesStart || enclosesEnd) {
+      continue;
+    }
+
     const overlapsCorridor =
       bounds.x < corridor.x + corridor.width &&
       bounds.x + bounds.width > corridor.x &&

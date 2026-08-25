@@ -17,12 +17,50 @@ import { getBoundLabel } from "../canvas/boundText";
 import { getElementBounds, getRotatedBounds } from "../canvas/elements";
 import type { NodeShape } from "./graph";
 import type { GridStyle } from "./grid";
+import type { SystemComponentType } from "./system";
 
 export interface SceneNode {
   id: string;
   label: string;
   shape: NodeShape;
 }
+
+/**
+ * Best-effort guess of what kind of system component a labelled node is, from
+ * its own name. This is what lets a follow-up like "add a cache between the API
+ * and the database" be answered with a typed node bound to the existing ones:
+ * the model sees "Postgres" and knows it is already a database.
+ */
+export const inferComponentType = (
+  label: string,
+): SystemComponentType | null => {
+  const text = label.toLowerCase();
+
+  /** First match wins, so order encodes priority — "cache cluster" is a cache. */
+  const patterns: Array<[RegExp, SystemComponentType]> = [
+    [/\b(load[- ]?balancer|\blb\b|balancer)\b/, "load-balancer"],
+    [/\b(database|db|postgres(ql)?|mysql|mongo(db)?|dynamo(db)?)\b/, "database"],
+    [/\b(cache|redis|memcached)\b/, "cache"],
+    [/\b(queue|kafka|rabbitmq|sqs|pubsub|pub\/sub|broker)\b/, "queue"],
+    [/\b(s3|bucket|blob storage|object storage|storage)\b/, "storage"],
+    [/\b(cdn|cloudfront)\b/, "cdn"],
+    [/\b(firewall|waf)\b/, "firewall"],
+    [/\b(gateway|proxy|router|ingress|envoy|nginx)\b/, "gateway"],
+    [
+      /\b(client|browser|user|mobile app|web app|frontend|front-end)\b/,
+      "client",
+    ],
+    [/\b(third[- ]party|external|stripe|payment provider)\b/, "external"],
+  ];
+
+  for (const [pattern, type] of patterns) {
+    if (pattern.test(text)) {
+      return type;
+    }
+  }
+
+  return null;
+};
 
 export interface SceneEdge {
   from: string;
@@ -568,7 +606,12 @@ export const formatSceneForPrompt = (summary: SceneSummary): string => {
     lines.push(
       "",
       "Diagram nodes present:",
-      ...summary.nodes.map((node) => `- "${node.label}" (${node.shape})`),
+      ...summary.nodes.map((node) => {
+        const componentType = inferComponentType(node.label);
+        return `- "${node.label}" (${node.shape}${
+          componentType ? `, reads as a ${componentType}` : ""
+        })`;
+      }),
       summary.edges.length > 0
         ? `Connections: ${summary.edges
             .map((edge) => `"${edge.from}" -> "${edge.to}"`)

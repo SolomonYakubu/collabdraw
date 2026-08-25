@@ -18,13 +18,15 @@ import { parseDiagramGraph, type DiagramGraph, type NodeAccent } from "./graph";
 import { parseGridSpec, type GridSpec } from "./grid";
 import { parseSceneSpec, type SceneSpec } from "./scene";
 import { parseSequenceSpec, type SequenceSpec } from "./sequence";
+import { parseSystemSpec, type SystemSpec } from "./system";
 
-export type IntentKind = "diagram" | "grid" | "sequence" | "scene";
+export type IntentKind = "diagram" | "grid" | "sequence" | "system" | "scene";
 
 export const INTENT_KINDS: IntentKind[] = [
   "diagram",
   "grid",
   "sequence",
+  "system",
   "scene",
 ];
 
@@ -66,6 +68,7 @@ export type DrawingIntent = IntentEnvelope &
     | { kind: "diagram"; diagram: DiagramGraph }
     | { kind: "grid"; grid: GridSpec }
     | { kind: "sequence"; sequence: SequenceSpec }
+    | { kind: "system"; system: SystemSpec }
     | { kind: "scene"; scene: SceneSpec }
   );
 
@@ -125,6 +128,7 @@ export const parseDrawingIntent = (
   );
   const grid = parseGridSpec(raw.grid ?? raw);
   const sequence = parseSequenceSpec(raw.sequence ?? raw);
+  const system = parseSystemSpec(raw.system ?? raw);
   const scene = parseSceneSpec(raw.scene ?? raw);
 
   const candidates: DrawingIntent[] = [];
@@ -136,6 +140,8 @@ export const parseDrawingIntent = (
       candidates.push({ ...envelope, kind, grid });
     } else if (kind === "sequence" && sequence) {
       candidates.push({ ...envelope, kind, sequence });
+    } else if (kind === "system" && system) {
+      candidates.push({ ...envelope, kind, system });
     } else if (kind === "scene" && scene) {
       candidates.push({ ...envelope, kind, scene });
     }
@@ -154,4 +160,11 @@ export const parseDrawingIntent = (
   return candidates[0] ?? null;
 };
 
-export type { DiagramGraph, GridSpec, NodeAccent, SceneSpec, SequenceSpec };
+export type {
+  DiagramGraph,
+  GridSpec,
+  NodeAccent,
+  SceneSpec,
+  SequenceSpec,
+  SystemSpec,
+};
