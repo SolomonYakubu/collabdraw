@@ -118,11 +118,17 @@ const isPointInsideElement = (worldPoint: Point, element: Shape): boolean => {
  *
  * `threshold` is in world units; callers should pass
  * `HIT_THRESHOLD_PX / viewport.zoom` so the grab area stays constant on screen.
+ *
+ * `includeInterior` makes the whole bounded area grabbable, ignoring the
+ * transparent-fill rule. Selection uses it so a shape can be picked up and
+ * dragged from its middle; the eraser and click-through paths leave it off so
+ * an empty shape still erases on its stroke and lets clicks fall through.
  */
 export const hitTestElement = (
   point: Point,
   element: Shape,
   threshold: number,
+  includeInterior = false,
 ): boolean => {
   if (element.isDeleted) {
     return false;
@@ -145,7 +151,10 @@ export const hitTestElement = (
     return true;
   }
 
-  return hasBackground(element) && isPointInsideElement(point, element);
+  return (
+    (includeInterior || hasBackground(element)) &&
+    isPointInsideElement(point, element)
+  );
 };
 
 /**
@@ -156,9 +165,10 @@ export const getElementAtPoint = (
   point: Point,
   elements: readonly Shape[],
   threshold: number,
+  includeInterior = false,
 ): Shape | null => {
   for (let i = elements.length - 1; i >= 0; i -= 1) {
-    if (hitTestElement(point, elements[i], threshold)) {
+    if (hitTestElement(point, elements[i], threshold, includeInterior)) {
       return elements[i];
     }
   }
@@ -170,10 +180,11 @@ export const getElementsAtPoint = (
   point: Point,
   elements: readonly Shape[],
   threshold: number,
+  includeInterior = false,
 ): Shape[] => {
   const hits: Shape[] = [];
   for (let i = elements.length - 1; i >= 0; i -= 1) {
-    if (hitTestElement(point, elements[i], threshold)) {
+    if (hitTestElement(point, elements[i], threshold, includeInterior)) {
       hits.push(elements[i]);
     }
   }

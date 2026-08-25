@@ -86,7 +86,11 @@ import {
   snapAngle,
   snapAngleValue,
 } from "../../utils/geometry";
-import { clientToWorld } from "../../utils/viewport";
+import {
+  clampZoom,
+  clientToWorld,
+  zoomAtPoint,
+} from "../../utils/viewport";
 import type { ApplyOptions, ElementsUpdater } from "./useScene";
 
 /** Pointer travel before a click turns into a drag, in screen pixels. */
@@ -141,7 +145,12 @@ type Interaction =
       /** Pointer angle at the start, so the shape does not jump on grab. */
       grabOffset: number;
     }
-  | { type: "erasing"; lastWorld: Point };
+  | { type: "erasing"; lastWorld: Point }
+  | {
+      type: "pinch";
+      lastMidpoint: Point;
+      lastDistance: number;
+    };
 
 /** Everything the interactive layer needs to draw, mirrored into state. */
 export interface InteractionVisuals {
@@ -242,6 +251,7 @@ export const usePointerInteraction = ({
   onPendingElementChange,
 }: UsePointerInteractionProps): PointerInteraction => {
   const interactionRef = useRef<Interaction>({ type: "idle" });
+  const activePointersRef = useRef<Map<number, Point>>(new Map());
   const erasingRef = useRef<Set<string>>(new Set());
   const trailRef = useRef<Point[]>([]);
 
@@ -819,6 +829,47 @@ export const usePointerInteraction = ({
       canvas.setPointerCapture(event.pointerId);
       event.preventDefault();
 
+      activePointersRef.current.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+
+      // If two or more fingers touch, enter pinch/pan mode and cancel any active drawing/dragging
+      if (activePointersRef.current.size >= 2) {
+        const current = interactionRef.current;
+        if (current.type === "drawing" || current.type === "freedraw") {
+          setPending(null);
+        } else if (
+          current.type === "dragging" ||
+          current.type === "pendingDrag" ||
+          current.type === "resizing" ||
+          current.type === "rotating"
+        ) {
+          const snapshot = "snapshot" in current ? current.snapshot : [];
+          if (snapshot.length > 0) {
+            const byId = new Map(snapshot.map((el) => [el.id, el]));
+            applyElements(
+              (prev) => prev.map((el) => byId.get(el.id) ?? el),
+              { commit: false, broadcast: "elements" },
+            );
+          }
+        }
+        resetVisuals();
+
+        const pts = Array.from(activePointersRef.current.values());
+        const p1 = pts[0];
+        const p2 = pts[1];
+        const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+        const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+
+        interactionRef.current = {
+          type: "pinch",
+          lastMidpoint: mid,
+          lastDistance: dist,
+        };
+        return;
+      }
+
       const activeTool = toolRef.current;
       const point = getWorldPoint(event);
 
@@ -1021,7 +1072,7 @@ export const usePointerInteraction = ({
         }
       }
 
-      const hit = getElementAtPoint(point, elementsRef.current, threshold);
+      const hit = getElementAtPoint(point, elementsRef.current, threshold, true);
 
       if (!hit) {
         interactionRef.current = {
@@ -1118,6 +1169,7 @@ export const usePointerInteraction = ({
         point,
         elementsRef.current,
         worldThreshold(HIT_THRESHOLD_PX),
+        true,
       );
 
       setHoverCursor(hit ? "move" : "default");
@@ -1127,6 +1179,55 @@ export const usePointerInteraction = ({
 
   const onPointerMove = useCallback(
     (event: React.PointerEvent<HTMLCanvasElement>) => {
+      if (activePointersRef.current.has(event.pointerId)) {
+        activePointersRef.current.set(event.pointerId, {
+          x: event.clientX,
+          y: event.clientY,
+        });
+      }
+
+      if (activePointersRef.current.size >= 2) {
+        const pts = Array.from(activePointersRef.current.values());
+        const p1 = pts[0];
+        const p2 = pts[1];
+        const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+        const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+
+        const canvas = canvasRef.current;
+        const rect = canvas ? canvas.getBoundingClientRect() : { left: 0, top: 0 };
+
+        if (interactionRef.current.type === "pinch") {
+          const { lastDistance, lastMidpoint } = interactionRef.current;
+          const ratio = dist / (lastDistance || 1);
+          const dx = mid.x - lastMidpoint.x;
+          const dy = mid.y - lastMidpoint.y;
+
+          const anchor = {
+            x: mid.x - rect.left,
+            y: mid.y - rect.top,
+          };
+
+          setViewport((current) => {
+            const nextZoom = clampZoom(current.zoom * ratio);
+            const zoomed = zoomAtPoint(current, nextZoom, anchor);
+            return {
+              ...zoomed,
+              scroll: {
+                x: zoomed.scroll.x + dx / zoomed.zoom,
+                y: zoomed.scroll.y + dy / zoomed.zoom,
+              },
+            };
+          });
+        }
+
+        interactionRef.current = {
+          type: "pinch",
+          lastMidpoint: mid,
+          lastDistance: dist,
+        };
+        return;
+      }
+
       const interaction = interactionRef.current;
       const point = getWorldPoint(event);
 
@@ -1358,13 +1459,22 @@ export const usePointerInteraction = ({
 
   const onPointerUp = useCallback(
     (event: React.PointerEvent<HTMLCanvasElement>) => {
-      const interaction = interactionRef.current;
-      interactionRef.current = { type: "idle" };
+      activePointersRef.current.delete(event.pointerId);
 
       const canvas = canvasRef.current;
       if (canvas?.hasPointerCapture(event.pointerId)) {
         canvas.releasePointerCapture(event.pointerId);
       }
+
+      if (activePointersRef.current.size > 0) {
+        // If one finger was lifted while in pinch, stay idle until all fingers release
+        interactionRef.current = { type: "idle" };
+        resetVisuals();
+        return;
+      }
+
+      const interaction = interactionRef.current;
+      interactionRef.current = { type: "idle" };
 
       const point = getWorldPoint(event);
 
@@ -1521,6 +1631,7 @@ export const usePointerInteraction = ({
 
   const onPointerCancel = useCallback(
     (event: React.PointerEvent<HTMLCanvasElement>) => {
+      activePointersRef.current.delete(event.pointerId);
       const canvas = canvasRef.current;
       if (canvas?.hasPointerCapture(event.pointerId)) {
         canvas.releasePointerCapture(event.pointerId);
@@ -1539,6 +1650,7 @@ export const usePointerInteraction = ({
         point,
         elementsRef.current,
         worldThreshold(HIT_THRESHOLD_PX),
+        true,
       );
 
       if (hit?.tool === "Text") {

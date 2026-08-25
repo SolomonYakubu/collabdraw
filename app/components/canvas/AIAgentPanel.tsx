@@ -97,14 +97,23 @@ function AIAgentPanel({
   }
 
   return (
-    <aside
-      className="island pointer-events-auto absolute right-3 top-3 z-40 flex max-h-[calc(100%-1.5rem)] w-[22rem] flex-col overflow-hidden"
-      aria-label="Assistant"
-    >
-      <header
-        className="flex items-center gap-2 border-b px-3 py-2"
-        style={{ borderColor: "var(--divider)" }}
+    <>
+      {/* Mobile backdrop */}
+      <div
+        className="fixed inset-0 z-40 bg-black/30 backdrop-blur-xs md:hidden"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+
+      <aside
+        className="island animate-slide-up pointer-events-auto fixed inset-x-2 bottom-2 top-auto z-40 flex max-h-[85vh] flex-col overflow-hidden shadow-2xl md:absolute md:inset-auto md:right-3 md:top-3 md:max-h-[calc(100%-1.5rem)] md:w-[22rem]"
+        aria-label="Assistant"
+        style={{ marginBottom: "max(0.5rem, env(safe-area-inset-bottom, 0.5rem))" }}
       >
+        <header
+          className="flex items-center gap-2 border-b px-3 py-2"
+          style={{ borderColor: "var(--divider)" }}
+        >
         <h2 className="text-[13px] font-semibold">Assistant</h2>
         <span className="text-[11px]" style={{ color: "var(--text-faint)" }}>
           sees your canvas
@@ -327,6 +336,7 @@ function AIAgentPanel({
         </div>
       </div>
     </aside>
+    </>
   );
 }
 

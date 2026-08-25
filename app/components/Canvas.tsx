@@ -56,6 +56,9 @@ import StylePanel from "./canvas/ui/StylePanel";
 import ContextMenu, { type ContextMenuItem } from "./canvas/ui/ContextMenu";
 import AIAgentPanel from "./canvas/AIAgentPanel";
 import ZoomControls from "./canvas/ui/ZoomControls";
+import MobileHeader from "./canvas/ui/MobileHeader";
+import MobileToolDock from "./canvas/ui/MobileToolDock";
+import MobileZoomControl from "./canvas/ui/MobileZoomControl";
 
 interface CanvasProps {
   initialTool?: ToolType;
@@ -93,6 +96,8 @@ const Canvas: React.FC<CanvasProps> = ({
   const [style, setStyle] = useState<ElementStyle>(DEFAULT_STYLE);
   const [showUsers, setShowUsers] = useState(false);
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isMobileStyleOpen, setIsMobileStyleOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<Point | null>(null);
 
   const { preference: themePreference, theme, cycle: cycleTheme } = useTheme();
@@ -836,8 +841,34 @@ const Canvas: React.FC<CanvasProps> = ({
         )}
       </div>
 
-      {/* Top-centre tool island */}
-      <div className="pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2">
+      {/* Mobile top navigation header */}
+      <MobileHeader
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={undo}
+        onRedo={redo}
+        onClear={clearCanvas}
+        onExport={exportPNG}
+        onShare={isCollaborative ? copyShareableLink : undefined}
+        linkCopied={linkCopied}
+        isCollaborative={isCollaborative}
+        isConnected={isConnected}
+        users={users}
+        currentUserId={userId}
+        onToggleAI={openAIPanel}
+        isAIPanelOpen={isAIPanelOpen}
+        isAiGenerating={ai.isGenerating}
+        aiConversationCount={ai.history.length}
+        themePreference={themePreference}
+        onCycleTheme={cycleTheme}
+        toolLocked={toolLocked}
+        onToggleToolLock={() => setToolLocked((locked) => !locked)}
+        isMenuOpen={isMobileMenuOpen}
+        onToggleMenu={() => setIsMobileMenuOpen((open) => !open)}
+      />
+
+      {/* Desktop top-centre tool island */}
+      <div className="pointer-events-none absolute left-1/2 top-3 z-30 hidden -translate-x-1/2 md:flex">
         <Toolbar
           tool={tool}
           onToolChange={handleToolChange}
@@ -862,9 +893,19 @@ const Canvas: React.FC<CanvasProps> = ({
         />
       </div>
 
-      {/* Left properties panel */}
+      {/* Mobile bottom tool dock */}
+      <MobileToolDock
+        tool={tool}
+        onToolChange={handleToolChange}
+        style={style}
+        isStyleSheetOpen={isMobileStyleOpen}
+        onToggleStyleSheet={() => setIsMobileStyleOpen((open) => !open)}
+        hasSelection={selectedElements.length > 0}
+      />
+
+      {/* Desktop left properties panel */}
       {showStylePanel && (
-        <div className="pointer-events-none absolute left-3 top-20 z-30 max-h-[calc(100%-6rem)] overflow-y-auto">
+        <div className="pointer-events-none absolute left-3 top-16 z-30 hidden max-h-[calc(100%-5rem)] overflow-y-auto md:block">
           <StylePanel
             style={style}
             onStyleChange={handleStyleChange}
@@ -879,7 +920,39 @@ const Canvas: React.FC<CanvasProps> = ({
         </div>
       )}
 
-      <div className="absolute bottom-3 left-3 z-30 flex items-center gap-2">
+      {/* Mobile properties bottom sheet */}
+      {showStylePanel && isMobileStyleOpen && (
+        <div className="fixed inset-0 z-40 flex flex-col md:hidden">
+          <div
+            className="fixed inset-0 bg-black/30 backdrop-blur-xs transition-opacity"
+            onClick={() => setIsMobileStyleOpen(false)}
+            aria-hidden="true"
+          />
+          <div
+            className="animate-slide-up relative m-2 mt-auto max-h-[75vh] overflow-y-auto shadow-2xl"
+            style={{ marginBottom: "max(4.5rem, calc(env(safe-area-inset-bottom, 0rem) + 4.25rem))" }}
+          >
+            <StylePanel
+              style={style}
+              onStyleChange={handleStyleChange}
+              hasSelection={selectedElements.length > 0}
+              showFill={showFillControls}
+              showEdgeStyle={showEdgeStyleControls}
+              onDelete={() => {
+                deleteSelection();
+                setIsMobileStyleOpen(false);
+              }}
+              onDuplicate={duplicateSelection}
+              onBringToFront={() => reorderSelection("front")}
+              onSendToBack={() => reorderSelection("back")}
+              onClose={() => setIsMobileStyleOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Desktop bottom controls: zoom & status */}
+      <div className="absolute bottom-3 left-3 z-30 hidden items-center gap-2 md:flex">
         <ZoomControls
           zoom={viewport.zoom}
           onZoomIn={zoomIn}
@@ -908,8 +981,22 @@ const Canvas: React.FC<CanvasProps> = ({
         )}
       </div>
 
+      {/* Mobile zoom controls — compact chip, bottom-left above the tool dock */}
+      <div
+        className="pointer-events-none fixed left-2 z-20 flex md:hidden"
+        style={{ bottom: "max(4.75rem, calc(env(safe-area-inset-bottom, 0rem) + 4.5rem))" }}
+      >
+        <MobileZoomControl
+          zoom={viewport.zoom}
+          onZoomIn={zoomIn}
+          onZoomOut={zoomOut}
+          onReset={resetZoom}
+          onZoomToFit={() => zoomToFit(selectionBounds ?? sceneBounds)}
+        />
+      </div>
+
       {isCollaborative && showUsers && users.length > 0 && (
-        <div className="island absolute bottom-14 left-3 z-30 w-52 p-3">
+        <div className="island absolute bottom-14 left-3 z-30 hidden w-52 p-3 md:block">
           <p
             className="mb-2 text-[11px] font-medium"
             style={{ color: "var(--text-muted)" }}

@@ -146,7 +146,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
   themePreference,
   onCycleTheme,
 }) => (
-  <div className="island pointer-events-auto flex items-center gap-0.5 p-1.5">
+  <div className="island pointer-events-auto no-scrollbar flex max-w-[calc(100vw-1.5rem)] items-center gap-0.5 overflow-x-auto p-1 md:p-1.5">
     <IconButton
       label={
         toolLocked
@@ -170,11 +170,11 @@ const Toolbar: React.FC<ToolbarProps> = ({
         aria-pressed={tool === id}
         data-active={tool === id ? "true" : undefined}
         onClick={() => onToolChange(id)}
-        className="island-button relative h-9 w-9"
+        className="island-button relative h-9 w-9 shrink-0"
       >
         {TOOL_ICONS[id]}
         <span
-          className="pointer-events-none absolute bottom-0.5 right-1 text-[9px] leading-none"
+          className="pointer-events-none absolute bottom-0.5 right-1 hidden text-[9px] leading-none sm:inline"
           style={{ color: "var(--text-faint)" }}
         >
           {label}
@@ -201,7 +201,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
         aria-pressed={isAIPanelOpen}
         data-active={isAIPanelOpen ? "true" : undefined}
         onClick={onToggleAI}
-        className="island-button relative h-9 w-9"
+        className="island-button relative h-9 w-9 shrink-0"
       >
         {isAiGenerating ? (
           <span
@@ -240,7 +240,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
         title="Collaborators"
         aria-label="Collaborators"
         onClick={onToggleUsers}
-        className="island-button h-9 min-w-9 gap-1 px-2 text-[12px] font-medium"
+        className="island-button h-9 min-w-9 shrink-0 gap-1 px-2 text-[12px] font-medium"
       >
         <FiUsers size={15} />
         {userCount > 0 && userCount}

@@ -17,6 +17,7 @@ import {
   FiChevronsUp,
   FiCopy,
   FiTrash2,
+  FiX,
 } from "react-icons/fi";
 import {
   ROUGHNESS,
@@ -69,6 +70,7 @@ export interface StylePanelProps {
   onDuplicate: () => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
+  onClose?: () => void;
 }
 
 const Section: React.FC<{ title: string; children: React.ReactNode }> = ({
@@ -100,7 +102,7 @@ const Swatch: React.FC<{
       aria-label={isTransparent ? "Transparent" : color}
       aria-pressed={active}
       onClick={onSelect}
-      className="relative h-6 w-6 overflow-hidden rounded border transition-transform hover:scale-105"
+      className="relative h-7 w-7 md:h-6 md:w-6 overflow-hidden rounded border transition-transform active:scale-95 hover:scale-105"
       style={{
         backgroundColor: isTransparent ? "var(--field-bg)" : color,
         borderColor: isTransparent ? "var(--field-border)" : "rgb(0 0 0 / 0.1)",
@@ -129,12 +131,61 @@ const Choice: React.FC<{
     aria-pressed={active}
     onClick={onSelect}
     data-active={active ? "true" : undefined}
-    className="island-button h-7 flex-1"
-    style={active ? undefined : { background: "var(--hover-bg)" }}
+    className="island-button h-8 md:h-7 flex-1 text-xs"
+    style={
+      active
+        ? {
+            background: "var(--active-bg)",
+            color: "var(--active-text)",
+            boxShadow: "inset 0 0 0 1.5px var(--accent)",
+          }
+        : { background: "var(--hover-bg)" }
+    }
   >
     {children}
   </button>
 );
+
+/** Small preview of each fill pattern — the five options won't fit as words. */
+const FillIcon: React.FC<{ value: FillStyle }> = ({ value }) => {
+  const stroke = { stroke: "currentColor", strokeWidth: 1.25 } as const;
+  return (
+    <svg width="20" height="14" viewBox="0 0 20 14" aria-hidden="true">
+      {value === "hachure" && (
+        <g {...stroke}>
+          <line x1="1" y1="10" x2="7" y2="2" />
+          <line x1="7" y1="12" x2="15" y2="2" />
+          <line x1="13" y1="12" x2="19" y2="4" />
+        </g>
+      )}
+      {value === "cross-hatch" && (
+        <g {...stroke}>
+          <line x1="1" y1="9" x2="8" y2="2" />
+          <line x1="10" y1="12" x2="18" y2="4" />
+          <line x1="1" y1="5" x2="8" y2="12" />
+          <line x1="10" y1="2" x2="18" y2="10" />
+        </g>
+      )}
+      {value === "solid" && (
+        <rect x="2" y="2" width="16" height="10" rx="1.5" fill="currentColor" />
+      )}
+      {value === "zigzag" && (
+        <polyline
+          points="1,10 4,4 7,10 10,4 13,10 16,4 19,10"
+          fill="none"
+          {...stroke}
+        />
+      )}
+      {value === "dots" && (
+        <g fill="currentColor">
+          {[3, 8, 13, 18].map((x) =>
+            [4, 10].map((y) => <circle key={`${x}-${y}`} cx={x} cy={y} r="1.15" />),
+          )}
+        </g>
+      )}
+    </svg>
+  );
+};
 
 const StylePanel: React.FC<StylePanelProps> = ({
   style,
@@ -146,10 +197,28 @@ const StylePanel: React.FC<StylePanelProps> = ({
   onDuplicate,
   onBringToFront,
   onSendToBack,
+  onClose,
 }) => (
-  <div className="island pointer-events-auto flex w-52 flex-col gap-3 p-3">
+  <div className="island pointer-events-auto flex w-full max-w-sm md:w-60 flex-col gap-3 p-3.5 md:p-3">
+    {onClose && (
+      <div className="flex items-center justify-between border-b pb-2 md:hidden" style={{ borderColor: "var(--divider)" }}>
+        <div className="flex items-center gap-2">
+          <span className="h-1 w-8 rounded-full bg-[var(--text-faint)] md:hidden" />
+          <span className="text-sm font-semibold">Properties</span>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="island-button h-8 w-8"
+          aria-label="Close properties"
+        >
+          <FiX size={16} />
+        </button>
+      </div>
+    )}
+
     <Section title="Stroke">
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-2 md:gap-1.5">
         {STROKE_COLORS.map((color) => (
           <Swatch
             key={color}
@@ -163,7 +232,7 @@ const StylePanel: React.FC<StylePanelProps> = ({
           aria-label="Custom stroke colour"
           value={style.stroke}
           onChange={(event) => onStyleChange({ stroke: event.target.value })}
-          className="field ml-auto h-6 w-6 cursor-pointer p-0"
+          className="field ml-auto h-7 w-7 md:h-6 md:w-6 cursor-pointer p-0"
         />
       </div>
     </Section>
@@ -171,7 +240,7 @@ const StylePanel: React.FC<StylePanelProps> = ({
     {showFill && (
       <>
         <Section title="Background">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2 md:gap-1.5">
             {FILL_COLORS.map((color) => (
               <Swatch
                 key={color}
@@ -185,7 +254,7 @@ const StylePanel: React.FC<StylePanelProps> = ({
               aria-label="Custom background colour"
               value={style.fill === "transparent" ? "#ffffff" : style.fill}
               onChange={(event) => onStyleChange({ fill: event.target.value })}
-              className="field ml-auto h-6 w-6 cursor-pointer p-0"
+              className="field ml-auto h-7 w-7 md:h-6 md:w-6 cursor-pointer p-0"
             />
           </div>
         </Section>
@@ -200,7 +269,7 @@ const StylePanel: React.FC<StylePanelProps> = ({
                   active={style.fillStyle === value}
                   onSelect={() => onStyleChange({ fillStyle: value })}
                 >
-                  <span className="text-[10px]">{label.slice(0, 2)}</span>
+                  <FillIcon value={value} />
                 </Choice>
               ))}
             </div>
@@ -294,7 +363,7 @@ const StylePanel: React.FC<StylePanelProps> = ({
             active={style.roughness === value}
             onSelect={() => onStyleChange({ roughness: value })}
           >
-            <span className="text-[10px]">{label.slice(0, 3)}</span>
+            <span className="truncate px-0.5">{label}</span>
           </Choice>
         ))}
       </div>

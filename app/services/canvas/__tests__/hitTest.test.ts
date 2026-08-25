@@ -30,6 +30,22 @@ describe("hitTestElement", () => {
     );
   });
 
+  it("grabs the hollow middle of a transparent shape when interior is included", () => {
+    // Selection passes includeInterior so a shape can be dragged from its centre,
+    // while the eraser and click-through paths keep the stroke-only rule.
+    expect(hitTestElement({ x: 100, y: 50 }, box(), 10, true)).toBe(true);
+    // A transparent triangle: inside the slanted body is grabbable, the empty
+    // bounding corners are still not.
+    const triangle = createElement("Triangle", {
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 200,
+    })!;
+    expect(hitTestElement({ x: 100, y: 150 }, triangle, 6, true)).toBe(true);
+    expect(hitTestElement({ x: 10, y: 10 }, triangle, 6, true)).toBe(false);
+  });
+
   it("respects the threshold just outside the stroke", () => {
     const element = box();
     expect(hitTestElement({ x: 100, y: -6 }, element, 10)).toBe(true);
