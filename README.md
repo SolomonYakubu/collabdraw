@@ -169,7 +169,7 @@ app/
 ├── context/          CollaborationContext (socket transport)
 ├── components/       Canvas.tsx and canvas/ (surface, overlays, UI)
 └── api/              generate-drawing (AI endpoint)
-server.js             Socket.IO relay
+server/               Socket.IO backend service (realtime collaboration)
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how these fit together and the

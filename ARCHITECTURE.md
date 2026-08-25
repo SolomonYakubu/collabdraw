@@ -343,8 +343,8 @@ registers. It does not own the element list, so there is one source of truth.
 - Cursors travel in **world** coordinates and are projected locally, so a
   cursor lands on the same part of the drawing for everyone regardless of each
   person's zoom.
-- `server.js` (Socket.IO, port 3001) relays messages and keeps the last known
-  scene per room so a later joiner gets the drawing.
+- `server/` (Socket.IO backend service, port 3001) relays messages and keeps
+  the last known scene per room so a later joiner gets the drawing.
 
 ## Tests
 
