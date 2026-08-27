@@ -17,6 +17,7 @@
     "canvas": "^3.0.0-rc3",
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "ioredis": "^6.0.0",
     "nanoid": "^3.3.11",
     "next": "15.2.8",
     "perfect-freehand": "^1.2.2",

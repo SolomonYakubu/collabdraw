@@ -39,6 +39,7 @@ import {
   formatSceneForPrompt,
   type SceneSummary,
 } from "../../services/ai/describeScene";
+import { isAllowedRateLimit } from "../../lib/rateLimit";
 
 /**
  * Drawing generation.
@@ -694,39 +695,8 @@ interface HistoryTurn {
 /** Keep the transcript short; the canvas graph already carries the state. */
 const MAX_HISTORY_TURNS = 8;
 
-/*
- * Rate limiting: the route proxies paid model calls, so an unthrottled client
- * is a cost-amplification vector. A fixed-window counter per IP is enough
- * here — no external store required for a single-instance deployment.
- */
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 20;
-
 /** Cap request bodies before parsing; inline images dominate the size. */
 const MAX_BODY_BYTES = 6 * 1024 * 1024;
-
-const rateBuckets = new Map<string, { count: number; resetAt: number }>();
-
-const isRateLimited = (ip: string): boolean => {
-  const now = Date.now();
-  const bucket = rateBuckets.get(ip);
-
-  if (!bucket || bucket.resetAt <= now) {
-    // Opportunistic cleanup so the map cannot grow without bound.
-    if (rateBuckets.size > 10_000) {
-      for (const [key, value] of rateBuckets) {
-        if (value.resetAt <= now) {
-          rateBuckets.delete(key);
-        }
-      }
-    }
-    rateBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return false;
-  }
-
-  bucket.count += 1;
-  return bucket.count > RATE_LIMIT_MAX_REQUESTS;
-};
 
 const clientIpOf = (request: NextRequest): string =>
   request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
@@ -806,7 +776,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: CONFIG_ERROR_MESSAGE }, { status: 503 });
   }
 
-  if (isRateLimited(clientIpOf(request))) {
+  const allowed = await isAllowedRateLimit(clientIpOf(request), 20, 60);
+  if (!allowed) {
     return NextResponse.json(
       { error: "Too many requests. Please wait a moment and try again." },
       { status: 429 },
