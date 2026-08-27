@@ -18,16 +18,9 @@ import {
   type Shape,
   type ToolType,
 } from "../types/shapes";
+import { getElementBounds, mutateElement } from "../services/canvas/elements";
 import {
-  duplicateElement,
-  getElementBounds,
-  mutateElement,
-  translateElement,
-} from "../services/canvas/elements";
-import {
-  MAX_BINDING_GAP_PX,
   removeStaleBindings,
-  settleBindingsAfterMove,
   updateBoundElements,
 } from "../services/canvas/bindings";
 import { getSelectionBounds } from "../services/canvas/transform";
@@ -35,7 +28,6 @@ import {
   getElementAtPoint,
   HIT_THRESHOLD_PX,
 } from "../services/canvas/hitTest";
-import { exportSceneToDataURL } from "../services/canvas/renderer";
 import { unionBoxes } from "../utils/geometry";
 import { clientToWorld, screenToWorld } from "../utils/viewport";
 
@@ -45,6 +37,7 @@ import { usePointerInteraction } from "../hooks/canvas/usePointerInteraction";
 import { useTextEditor } from "../hooks/canvas/useTextEditor";
 import { useKeyboardShortcuts } from "../hooks/canvas/useKeyboardShortcuts";
 import { useAIAssistant } from "../hooks/canvas/useAIAssistant";
+import { useCanvasCommands } from "../hooks/canvas/useCanvasCommands";
 import { useTheme } from "../hooks/useTheme";
 import { useCollaborationContext } from "../context/CollaborationContext";
 
@@ -83,7 +76,6 @@ const Canvas: React.FC<CanvasProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const interactiveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const spacePressedRef = useRef(false);
-  const clipboardRef = useRef<Shape[]>([]);
 
   const [tool, setTool] = useState<ToolType>(initialTool);
   /*
@@ -187,6 +179,28 @@ const Canvas: React.FC<CanvasProps> = ({
     resetZoom,
     zoomToFit,
   } = viewportApi;
+
+  const {
+    clipboardRef,
+    clearCanvas,
+    copySelection,
+    cutSelection,
+    deleteSelection,
+    duplicateSelection,
+    exportPNG,
+    nudgeSelection,
+    paste,
+    reorderSelection,
+    selectAll,
+  } = useCanvasCommands({
+    elements,
+    elementsRef,
+    selectedIds,
+    setSelectedIds,
+    setTool,
+    applyElements,
+    viewportRef,
+  });
 
   /* ------------------------------------------------------------------ *
    * Collaboration wiring
@@ -319,181 +333,6 @@ const Canvas: React.FC<CanvasProps> = ({
   /* ------------------------------------------------------------------ *
    * Commands
    * ------------------------------------------------------------------ */
-
-  const deleteSelection = useCallback(() => {
-    if (selectedIds.length === 0) {
-      return;
-    }
-
-    const removing = new Set(selectedIds);
-    // Deleting a container removes the label bound to it as well.
-    for (const element of elementsRef.current) {
-      if (!removing.has(element.id)) {
-        continue;
-      }
-      for (const bound of element.boundElements ?? []) {
-        if (bound.type === "text") {
-          removing.add(bound.id);
-        }
-      }
-    }
-
-    applyElements(
-      (previous) => previous.filter((element) => !removing.has(element.id)),
-      { deletedIds: [...removing] },
-    );
-    setSelectedIds([]);
-  }, [applyElements, elementsRef, selectedIds]);
-
-  const duplicateSelection = useCallback(() => {
-    if (selectedIds.length === 0) {
-      return;
-    }
-
-    const wanted = new Set(selectedIds);
-    const copies = elementsRef.current
-      .filter((element) => wanted.has(element.id))
-      .map((element) => duplicateElement(element));
-
-    if (copies.length === 0) {
-      return;
-    }
-
-    applyElements((previous) => [...previous, ...copies], {
-      changedIds: copies.map((element) => element.id),
-    });
-    setSelectedIds(copies.map((element) => element.id));
-  }, [applyElements, elementsRef, selectedIds]);
-
-  const nudgeSelection = useCallback(
-    (dx: number, dy: number) => {
-      if (selectedIds.length === 0) {
-        return;
-      }
-
-      const moving = new Set(selectedIds);
-
-      applyElements(
-        (previous) =>
-          settleBindingsAfterMove(
-            previous.map((element) =>
-              moving.has(element.id)
-                ? translateElement(element, dx, dy)
-                : element,
-            ),
-            moving,
-            MAX_BINDING_GAP_PX / viewportRef.current.zoom,
-          ),
-        { changedIds: selectedIds },
-      );
-    },
-    [applyElements, selectedIds, viewportRef],
-  );
-
-  const selectAll = useCallback(() => {
-    setSelectedIds(elementsRef.current.map((element) => element.id));
-    setTool("Select");
-  }, [elementsRef]);
-
-  const copySelection = useCallback(() => {
-    const wanted = new Set(selectedIds);
-    clipboardRef.current = elementsRef.current
-      .filter((element) => wanted.has(element.id))
-      .map((element) => ({ ...element }));
-  }, [elementsRef, selectedIds]);
-
-  const cutSelection = useCallback(() => {
-    copySelection();
-    deleteSelection();
-  }, [copySelection, deleteSelection]);
-
-  const paste = useCallback(() => {
-    const copied = clipboardRef.current;
-    if (copied.length === 0) {
-      return;
-    }
-
-    const copies = copied.map((element) => duplicateElement(element, 20));
-    applyElements((previous) => [...previous, ...copies], {
-      changedIds: copies.map((element) => element.id),
-    });
-    setSelectedIds(copies.map((element) => element.id));
-    setTool("Select");
-  }, [applyElements]);
-
-  /** Reorder the selection within the element array, which is the z-order. */
-  const reorderSelection = useCallback(
-    (mode: "front" | "back" | "forward" | "backward") => {
-      if (selectedIds.length === 0) {
-        return;
-      }
-
-      const wanted = new Set(selectedIds);
-
-      applyElements(
-        (previous) => {
-          const moving = previous.filter((element) => wanted.has(element.id));
-          const rest = previous.filter((element) => !wanted.has(element.id));
-
-          if (mode === "front") {
-            return [...rest, ...moving];
-          }
-          if (mode === "back") {
-            return [...moving, ...rest];
-          }
-
-          // One step at a time, preserving relative order within the selection.
-          const next = [...previous];
-          const indices = next
-            .map((element, index) => ({ element, index }))
-            .filter(({ element }) => wanted.has(element.id))
-            .map(({ index }) => index);
-
-          if (mode === "forward") {
-            for (let i = indices.length - 1; i >= 0; i -= 1) {
-              const index = indices[i];
-              if (index < next.length - 1 && !wanted.has(next[index + 1].id)) {
-                [next[index], next[index + 1]] = [next[index + 1], next[index]];
-              }
-            }
-          } else {
-            for (let i = 0; i < indices.length; i += 1) {
-              const index = indices[i];
-              if (index > 0 && !wanted.has(next[index - 1].id)) {
-                [next[index], next[index - 1]] = [next[index - 1], next[index]];
-              }
-            }
-          }
-
-          return next;
-        },
-        // Ordering is positional, so peers need the whole array.
-        { broadcast: "full" },
-      );
-    },
-    [applyElements, selectedIds],
-  );
-
-  const clearCanvas = useCallback(() => {
-    if (elementsRef.current.length === 0) {
-      return;
-    }
-    applyElements(() => [], { broadcast: "full" });
-    setSelectedIds([]);
-  }, [applyElements, elementsRef]);
-
-  const exportPNG = useCallback(() => {
-    const dataURL = exportSceneToDataURL(elementsRef.current);
-
-    if (!dataURL) {
-      return;
-    }
-
-    const link = document.createElement("a");
-    link.download = `collabdraw-${new Date().toISOString().slice(0, 10)}.png`;
-    link.href = dataURL;
-    link.click();
-  }, [elementsRef]);
 
   /** Apply a style change to the selection, and remember it for new elements. */
   const handleStyleChange = useCallback(

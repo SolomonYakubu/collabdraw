@@ -1,4 +1,5 @@
 const roomStore = require('../state');
+const { loadCanvasState } = require('../roomState');
 const { clampTag, isValidRoomId } = require('../validation');
 
 /**
@@ -6,7 +7,7 @@ const { clampTag, isValidRoomId } = require('../validation');
  */
 function registerRoomHandlers(io, socket) {
   // Handle join room event
-  socket.on('join-room', (data) => {
+  socket.on('join-room', async (data) => {
     const { roomId, userId, userTag } = data || {};
     if (!isValidRoomId(roomId)) return;
     if (typeof userId !== 'string' || !userId || userId.length > 128) return;
@@ -30,12 +31,17 @@ function registerRoomHandlers(io, socket) {
     io.to(roomId).emit('active-users', { users });
     console.log(`User ${userTag} joined room ${roomId}`);
 
-    // If canvas state is already cached on the server, sync directly
-    if (roomStore.hasCanvasState(roomId)) {
+    // If canvas state is already cached on the server, sync directly. Redis is
+    // the restart-safe fallback when this process has no local snapshot yet.
+    const persistedState = roomStore.hasCanvasState(roomId)
+      ? roomStore.getCanvasState(roomId)
+      : await loadCanvasState(roomId);
+    if (persistedState) {
+      roomStore.setCanvasState(roomId, persistedState);
       socket.emit('canvas-state-sync', {
         roomId,
         userId: 'server',
-        shapes: roomStore.getCanvasState(roomId),
+        shapes: persistedState,
       });
       console.log(`Sent stored canvas state to new user ${userTag} in room ${roomId}`);
     } else if (users.length > 1) {
@@ -57,7 +63,12 @@ function registerRoomHandlers(io, socket) {
   socket.on('get-active-users', (data, callback) => {
     const { roomId } = data || {};
     if (typeof callback === 'function') {
-      callback({ users: roomStore.getRoomUsers(roomId) });
+      callback({
+        users:
+          roomStore.userRooms.get(socket.id) === roomId
+            ? roomStore.getRoomUsers(roomId)
+            : [],
+      });
     }
   });
 

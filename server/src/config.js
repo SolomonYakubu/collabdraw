@@ -9,4 +9,6 @@ module.exports = {
   port: parseInt(process.env.PORT || "3001", 10),
   clientOrigin: process.env.CLIENT_ORIGIN || "http://localhost:3000",
   isProduction: process.env.NODE_ENV === "production",
+  redisUrl: process.env.REDIS_URL || "",
+  requireRedis: process.env.REQUIRE_REDIS === "true",
 };

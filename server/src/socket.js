@@ -1,14 +1,15 @@
 const { Server } = require("socket.io");
 const config = require("./config");
-const roomStore = require("./state");
 const registerRoomHandlers = require("./handlers/roomHandler");
 const registerCanvasHandlers = require("./handlers/canvasHandler");
 const registerCursorHandlers = require("./handlers/cursorHandler");
+const { configureSocketAdapter, initRedis } = require("./redis");
 
 /**
  * Initialize Socket.IO with CORS and event dispatchers.
  */
 function initSocket(httpServer) {
+  const redisClients = initRedis();
   const io = new Server(httpServer, {
     cors: {
       origin: config.clientOrigin,
@@ -16,14 +17,11 @@ function initSocket(httpServer) {
       credentials: true,
     },
   });
+  configureSocketAdapter(io, redisClients);
 
   io.on("connection", (socket) => {
     const { userId, userTag, roomId } = socket.handshake.query;
     console.log(`User connected: ${userTag} (${userId}) in room ${roomId}`);
-
-    if (roomId && typeof roomId === "string") {
-      roomStore.userRooms.set(socket.id, roomId);
-    }
 
     // Register modular event listeners
     registerRoomHandlers(io, socket);

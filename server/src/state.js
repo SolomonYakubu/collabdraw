@@ -2,6 +2,8 @@
  * In-memory state store for active collaboration rooms, connected users,
  * and current canvas shape states.
  */
+const { MAX_SHAPES_PER_ROOM } = require("./validation");
+
 class RoomStore {
   constructor() {
     /** @type {Map<string, Map<string, { id: string, tag: string, socketId: string }>>} */
@@ -94,7 +96,7 @@ class RoomStore {
    * Overwrite canvas state for a room.
    */
   setCanvasState(roomId, shapes) {
-    this.roomCanvasStates.set(roomId, shapes);
+    this.roomCanvasStates.set(roomId, shapes.slice(0, MAX_SHAPES_PER_ROOM));
   }
 
   /**
@@ -116,7 +118,10 @@ class RoomStore {
             merged.push(incomingShape);
           }
         });
-        this.roomCanvasStates.set(roomId, merged);
+        this.roomCanvasStates.set(
+          roomId,
+          merged.slice(0, MAX_SHAPES_PER_ROOM),
+        );
       }
     }
 

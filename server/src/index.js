@@ -5,6 +5,7 @@ const cors = require("cors");
 const config = require("./config");
 const initSocket = require("./socket");
 const roomStore = require("./state");
+const { closeRedis } = require("./redis");
 
 const app = express();
 app.use(cors({ origin: config.clientOrigin, credentials: true }));
@@ -32,9 +33,12 @@ server.listen(config.port, () => {
 // Graceful shutdown handling (SIGINT for local dev, SIGTERM for cloud containers)
 const shutdown = () => {
   console.log("Shutting down CollabDraw Socket.IO server...");
-  server.close(() => {
-    console.log("Server has been closed");
-    process.exit(0);
+  io.close(async () => {
+    await closeRedis();
+    server.close(() => {
+      console.log("Server has been closed");
+      process.exit(0);
+    });
   });
 };
 

@@ -5,11 +5,15 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "worker": "node src/jobs/worker.js"
   },
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
+    "bullmq": "^6.3.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
+    "ioredis": "^6.0.0",
     "socket.io": "^4.8.1"
   }
 }

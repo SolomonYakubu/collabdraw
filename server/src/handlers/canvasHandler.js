@@ -1,4 +1,5 @@
 const roomStore = require('../state');
+const { saveCanvasState } = require('../roomState');
 const {
   MAX_SHAPES_PER_ROOM,
   isValidRoomId,
@@ -23,6 +24,7 @@ function registerCanvasHandlers(io, socket) {
     const safeShapes = sanitizeShapes(shapes);
     if (safeShapes) {
       roomStore.setCanvasState(roomId, safeShapes.slice(0, MAX_SHAPES_PER_ROOM));
+      void saveCanvasState(roomId, safeShapes.slice(0, MAX_SHAPES_PER_ROOM));
     }
 
     const targetUser = roomStore.getUserInRoom(roomId, targetUserId);
@@ -48,6 +50,7 @@ function registerCanvasHandlers(io, socket) {
     if (!safeShapes && !safeDeleted) return;
 
     roomStore.updateCanvasState(roomId, safeShapes, safeDeleted, Boolean(fullUpdate));
+    void saveCanvasState(roomId, roomStore.getCanvasState(roomId) || []);
 
     // Forward only the sanitized fields to all other clients in the room.
     socket.to(roomId).emit('canvas-update', {

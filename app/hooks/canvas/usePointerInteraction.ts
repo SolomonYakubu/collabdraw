@@ -3,41 +3,29 @@
 /**
  * The single pointer state machine for the canvas.
  *
- * Replaces three overlapping implementations (`useCanvasEventHandlers`,
- * `useCanvasInteractions` and the handlers inlined in `RoughCanvas`) that each
- * did their own hit testing and their own screen->world maths, and disagreed
- * with one another at any zoom other than 1.
- *
  * Interaction state lives in a ref, so a fast pointer stream never reads a
  * stale closure; only the parts the interactive layer has to draw are mirrored
  * into React state.
+ *
+ * Interaction math and strategy algorithms are delegated to modules under
+ * `./interactions/` (drawing, transform, eraser, types).
  */
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useLatest } from "../useLatest";
 import {
-  ELEMENT_TYPES,
   isLinearShape,
   isTextContainer,
-  type AlignmentGuide,
-  type BoundingBox,
   type ElementStyle,
   type ElementType,
-  type LinearShape,
   type Point,
   type Shape,
   type ToolType,
-  type TransformHandle,
   type Viewport,
 } from "../../types/shapes";
 import {
   createElement,
   duplicateElement,
-  getElementBounds,
-  getElementCenter,
-  mutateElement,
-  normalizeElement,
-  translateElement,
 } from "../../services/canvas/elements";
 import {
   getElementAtPoint,
@@ -45,7 +33,6 @@ import {
   getHandleCursor,
   getHandleIndex,
   getTransformHandleAtPoint,
-  hitTestElementWithSegment,
   isInsertHandle,
   isWaypointHandle,
   HIT_THRESHOLD_PX,
@@ -63,119 +50,46 @@ import {
   getHoveredBindableElement,
   MAX_BINDING_GAP_PX,
   settleBindingsAfterMove,
-  updateBoundElements,
 } from "../../services/canvas/bindings";
-import {
-  applyResizeToElements,
-  applyRotatedResize,
-  getResizedBounds,
-  getSelectionBounds,
-  setElementAngle,
-} from "../../services/canvas/transform";
-import {
-  getSnapOffset,
-  SNAP_THRESHOLD_PX,
-} from "../../services/canvas/snapping";
+import { getSelectionBounds } from "../../services/canvas/transform";
 import {
   snapToPoint,
   SNAP_POINT_THRESHOLD_PX,
-  type SnapCandidate,
 } from "../../services/canvas/pointSnapping";
 import {
   boxCenter,
   distanceToSegment,
   normalizeBox,
-  normalizeAngle,
-  rotatePoint,
-  simplifyPoints,
-  snapAngle,
-  snapAngleValue,
 } from "../../utils/geometry";
 import { clampZoom, clientToWorld, zoomAtPoint } from "../../utils/viewport";
 import type { ApplyOptions, ElementsUpdater } from "./useScene";
 
-/** Pointer travel before a click turns into a drag, in screen pixels. */
-const DRAG_THRESHOLD_PX = 2;
+import {
+  canBindToShapes,
+  DRAG_THRESHOLD_PX,
+  DRAWING_TOOLS,
+  EMPTY_VISUALS,
+  FREEHAND_MIN_SPACING_PX,
+  type Interaction,
+  type InteractionVisuals,
+} from "./interactions/types";
+import {
+  finishDrawing,
+  resolveDrawnLinear,
+  updateDrawnGeometry,
+} from "./interactions/drawing";
+import {
+  applyDragTransform,
+  applyEndpointDragTransform,
+  applyResizeTransform,
+  applyRotationTransform,
+} from "./interactions/transform";
+import {
+  accumulateEraserHits,
+  commitEraserDeletions,
+} from "./interactions/eraser";
 
-/** Smaller than this and a drawn shape is treated as a stray click. */
-const MIN_DRAW_SIZE_PX = 4;
-
-/** Minimum spacing between recorded freehand points, in screen pixels. */
-const FREEHAND_MIN_SPACING_PX = 1.5;
-
-/** Eraser radius in screen pixels. */
-const ERASER_RADIUS_PX = 12;
-
-type Interaction =
-  | { type: "idle" }
-  | { type: "panning"; lastClient: Point }
-  | {
-      type: "drawing";
-      origin: Point;
-      element: Shape;
-      /** Shape the start of a line/arrow landed on, bound provisionally. */
-      startTargetId: string | null;
-    }
-  | { type: "freedraw"; element: Shape; lastWorld: Point }
-  | { type: "marquee"; origin: Point; baseSelection: string[] }
-  | {
-      type: "pendingDrag";
-      origin: Point;
-      elementId: string;
-      snapshot: Shape[];
-      altKey: boolean;
-    }
-  | { type: "dragging"; origin: Point; snapshot: Shape[] }
-  | {
-      type: "resizing";
-      handle: TransformHandle;
-      initialBounds: BoundingBox;
-      snapshot: Shape[];
-    }
-  | {
-      type: "endpoint";
-      arrowId: string;
-      which: "start" | "end";
-      snapshot: Shape[];
-    }
-  | { type: "waypoint"; arrowId: string; index: number }
-  | {
-      type: "rotating";
-      snapshot: Shape[];
-      pivot: Point;
-      /** Pointer angle at the start, so the shape does not jump on grab. */
-      grabOffset: number;
-    }
-  | { type: "erasing"; lastWorld: Point }
-  | {
-      type: "pinch";
-      lastMidpoint: Point;
-      lastDistance: number;
-    };
-
-/** Everything the interactive layer needs to draw, mirrored into state. */
-export interface InteractionVisuals {
-  marquee: BoundingBox | null;
-  guides: AlignmentGuide[];
-  bindingHighlightId: string | null;
-  eraserTrail: Point[];
-  erasingIds: Set<string>;
-  isTransforming: boolean;
-  activeHandle: TransformHandle | null;
-  /** The vertex an endpoint is currently locked onto, for feedback. */
-  snapPoint: SnapCandidate | null;
-}
-
-const EMPTY_VISUALS: InteractionVisuals = {
-  marquee: null,
-  guides: [],
-  bindingHighlightId: null,
-  eraserTrail: [],
-  erasingIds: new Set(),
-  isTransforming: false,
-  activeHandle: null,
-  snapPoint: null,
-};
+export type { InteractionVisuals } from "./interactions/types";
 
 export interface UsePointerInteractionProps {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
@@ -211,28 +125,6 @@ export interface PointerInteraction {
   /** Abort whatever is in progress, e.g. when Escape is pressed. */
   cancel: () => void;
 }
-
-/**
- * Only arrows attach themselves to shapes.
- *
- * A plain line stays exactly where it is put, which is what makes it usable for
- * geometry — joining two corners to draw a cube, for instance. Binding a line
- * dragged its ends onto the nearest outline and stood them off by the binding
- * gap, so the corners could never actually meet. Excalidraw draws the same
- * distinction.
- */
-const canBindToShapes = (element: Shape): boolean => element.tool === "Arrow";
-
-/**
- * Tools that create an element by dragging.
- *
- * Derived from the element model rather than listed by hand: a hand-written list
- * silently omitted the triangle when it was added, so its tool selected but drew
- * nothing. Text is the one element with its own path — a click, not a drag.
- */
-const DRAWING_TOOLS = new Set<ToolType>(
-  ELEMENT_TYPES.filter((type) => type !== "Text"),
-);
 
 export const usePointerInteraction = ({
   canvasRef,
@@ -308,11 +200,6 @@ export const usePointerInteraction = ({
 
   /**
    * Put a point on a nearby vertex, edge midpoint or centre.
-   *
-   * This is what makes corner-to-corner drawing possible: without it the end of
-   * a line lands wherever the pointer happened to be, and two lines meeting at a
-   * corner never quite touch. Holding shift means the user is constraining the
-   * angle deliberately, so snapping stands aside.
    */
   const applyPointSnap = useCallback(
     (
@@ -345,459 +232,66 @@ export const usePointerInteraction = ({
       const wanted = new Set(ids);
       return elementsRef.current.filter((element) => wanted.has(element.id));
     },
-    [elementsRef],
+    [elementsRef, selectedIdsRef],
   );
 
   /* ------------------------------------------------------------------ *
-   * Drawing
+   * Interaction context bundles for strategy functions
    * ------------------------------------------------------------------ */
 
-  const updateDrawnGeometry = useCallback(
-    (
-      element: Shape,
-      origin: Point,
-      pointer: Point,
-      modifiers: { shiftKey: boolean; altKey: boolean },
-    ): Shape => {
-      if (isLinearShape(element)) {
-        const end = modifiers.shiftKey ? snapAngle(origin, pointer) : pointer;
-
-        // `route` is derived from the ends, and the renderer, the bounds and the
-        // hit test all read it — so moving an end without re-resolving leaves an
-        // element that draws as nothing.
-        return refreshLinearElement(
-          mutateElement(element, {
-            x1: origin.x,
-            y1: origin.y,
-            x2: end.x,
-            y2: end.y,
-          }),
-          elementsRef.current,
-        );
-      }
-
-      let box = normalizeBox(origin.x, origin.y, pointer.x, pointer.y);
-
-      if (modifiers.shiftKey) {
-        // Square / circle: lock to the larger dimension, keeping the anchor.
-        const size = Math.max(box.width, box.height);
-        box = {
-          x: pointer.x < origin.x ? origin.x - size : origin.x,
-          y: pointer.y < origin.y ? origin.y - size : origin.y,
-          width: size,
-          height: size,
-        };
-      }
-
-      if (modifiers.altKey) {
-        // Alt draws outward from the origin instead of towards the pointer.
-        box = {
-          x: origin.x - box.width,
-          y: origin.y - box.height,
-          width: box.width * 2,
-          height: box.height * 2,
-        };
-      }
-
-      return mutateElement(element, box);
-    },
-    [elementsRef],
-  );
-
-  /**
-   * While a line or arrow is being drawn, attach it provisionally to whatever
-   * its ends are over and resolve the route. That is what makes the connector
-   * snap to a shape's edge and, for an elbow, bend into place as you drag,
-   * instead of only settling once the pointer is released.
-   */
-  const resolveDrawnLinear = useCallback(
-    (
-      element: Shape,
-      startTargetId: string | null,
-      origin: Point,
-      pointer: Point,
-    ): { element: Shape; endTargetId: string | null } => {
-      if (!isLinearShape(element)) {
-        return { element, endTargetId: null };
-      }
-
-      const scene = elementsRef.current;
-
-      if (!canBindToShapes(element)) {
-        // A plain line never attaches to anything, but its path still has to be
-        // resolved from its ends and waypoints.
-        return {
-          element: refreshLinearElement(element, scene),
-          endTargetId: null,
-        };
-      }
-      const gap = worldThreshold(MAX_BINDING_GAP_PX);
-
-      const startTarget = startTargetId
-        ? (scene.find((item) => item.id === startTargetId) ?? null)
-        : null;
-      const endTarget = getHoveredBindableElement(
-        pointer,
-        scene,
-        gap,
-        element.id,
-      );
-
-      const provisional = mutateElement(element, {
-        startBinding: startTarget
-          ? createBinding(startTarget, origin, gap)
-          : null,
-        endBinding: endTarget ? createBinding(endTarget, pointer, gap) : null,
-      });
-
-      return {
-        element: refreshLinearElement(provisional, scene),
-        endTargetId: endTarget?.id ?? null,
-      };
-    },
-    [elementsRef, worldThreshold],
-  );
-
-  const finishDrawing = useCallback(
-    (element: Shape, origin: Point, pointer: Point) => {
-      const minSize = worldThreshold(MIN_DRAW_SIZE_PX);
-      const bounds = getElementBounds(element);
-
-      const tooSmall =
-        element.tool === "Freehand"
-          ? element.points.length < 4
-          : bounds.width < minSize && bounds.height < minSize;
-
-      if (tooSmall) {
-        setPending(null);
-        return;
-      }
-
-      let finalElement = element;
-
-      if (finalElement.tool === "Freehand") {
-        finalElement = normalizeElement(
-          mutateElement(finalElement, {
-            points: simplifyPoints(finalElement.points, worldThreshold(0.7)),
-          }),
-        );
-      }
-
-      const committed = finalElement;
-      setPending(null);
-
-      applyElements(
-        (previous) => {
-          let next = [...previous, committed];
-
-          // The element already carries the bindings worked out during the
-          // drag; this records the reverse references and settles the route.
-          if (isLinearShape(committed) && canBindToShapes(committed)) {
-            next = applyBindings(next, committed.id, {
-              start: committed.startBinding ?? null,
-              end: committed.endBinding ?? null,
-            });
-          }
-
-          return next;
-        },
-        { changedIds: [committed.id] },
-      );
-
-      // Excalidraw hands you back the selection tool with the new shape
-      // selected, unless the tool lock is on.
-      setSelectedIds([committed.id]);
-      if (!toolLocked) {
-        setTool("Select");
-      }
-    },
-    [
+  const drawingCtx = useMemo(
+    () => ({
+      elementsRef,
       applyElements,
+      worldThreshold,
       setPending,
       setSelectedIds,
       setTool,
       toolLocked,
+    }),
+    [
+      elementsRef,
+      applyElements,
       worldThreshold,
+      setPending,
+      setSelectedIds,
+      setTool,
+      toolLocked,
     ],
   );
 
-  /* ------------------------------------------------------------------ *
-   * Eraser
-   * ------------------------------------------------------------------ */
-
-  const accumulateErasures = useCallback(
-    (from: Point, to: Point, restore: boolean) => {
-      const radius = worldThreshold(ERASER_RADIUS_PX);
-      const set = erasingRef.current;
-      let changed = false;
-
-      for (const element of elementsRef.current) {
-        if (!hitTestElementWithSegment(from, to, element, radius)) {
-          continue;
-        }
-
-        if (restore) {
-          changed = set.delete(element.id) || changed;
-        } else if (!set.has(element.id)) {
-          set.add(element.id);
-          changed = true;
-        }
-      }
-
-      const trail = trailRef.current;
-      trail.push(to);
-      if (trail.length > 64) {
-        trail.shift();
-      }
-
-      if (changed) {
-        patchVisuals({ erasingIds: new Set(set), eraserTrail: [...trail] });
-      } else {
-        patchVisuals({ eraserTrail: [...trail] });
-      }
-    },
-    [elementsRef, patchVisuals, worldThreshold],
+  const transformCtx = useMemo(
+    () => ({
+      elementsRef,
+      applyElements,
+      patchVisuals,
+      worldThreshold,
+      applyPointSnap,
+    }),
+    [elementsRef, applyElements, patchVisuals, worldThreshold, applyPointSnap],
   );
 
-  const commitErasures = useCallback(() => {
-    const ids = erasingRef.current;
-
-    if (ids.size === 0) {
-      resetVisuals();
-      return;
-    }
-
-    const deleted = [...ids];
-    resetVisuals();
-
-    applyElements(
-      (previous) => previous.filter((element) => !ids.has(element.id)),
-      { deletedIds: deleted, broadcast: "elements" },
-    );
-
-    setSelectedIds(selectedIdsRef.current.filter((id) => !ids.has(id)));
-  }, [applyElements, resetVisuals, setSelectedIds]);
-
-  /* ------------------------------------------------------------------ *
-   * Dragging and resizing
-   * ------------------------------------------------------------------ */
-
-  const applyDrag = useCallback(
-    (snapshot: readonly Shape[], delta: Point, snap: boolean) => {
-      const ids = new Set(snapshot.map((element) => element.id));
-      const bounds = getSelectionBounds(snapshot);
-
-      let offset = delta;
-      let guides: AlignmentGuide[] = [];
-
-      if (snap && bounds) {
-        const moved = {
-          ...bounds,
-          x: bounds.x + delta.x,
-          y: bounds.y + delta.y,
-        };
-        const result = getSnapOffset(
-          moved,
-          elementsRef.current,
-          ids,
-          worldThreshold(SNAP_THRESHOLD_PX),
-        );
-        offset = {
-          x: delta.x + result.offset.x,
-          y: delta.y + result.offset.y,
-        };
-        guides = result.guides;
-      }
-
-      patchVisuals({ guides, isTransforming: true });
-
-      // Indexed once per frame: a linear scan per element would be quadratic
-      // in the size of the selection.
-      const originals = new Map(
-        snapshot.map((element) => [element.id, element]),
-      );
-
-      applyElements(
-        (previous) => {
-          const moved = previous.map((element) => {
-            const original = originals.get(element.id);
-            return original
-              ? translateElement(original, offset.x, offset.y)
-              : element;
-          });
-
-          return updateBoundElements(moved, ids, { skipSelf: true });
-        },
-        { commit: false, changedIds: [...ids] },
-      );
-    },
-    [applyElements, elementsRef, patchVisuals, worldThreshold],
-  );
-
-  const applyResize = useCallback(
-    (
-      snapshot: readonly Shape[],
-      initialBounds: BoundingBox,
-      handle: TransformHandle,
-      pointer: Point,
-      modifiers: { shiftKey: boolean; altKey: boolean },
-    ) => {
-      const single = snapshot.length === 1 ? snapshot[0] : null;
-      const angle = single?.angle ?? 0;
-
-      // A rotated handle is dragged where it is seen, so the pointer has to come
-      // back into the element's own frame before the box maths can use it.
-      const localPointer =
-        angle === 0
-          ? pointer
-          : rotatePoint(pointer, boxCenter(initialBounds), -angle);
-
-      const nextBounds = getResizedBounds(handle, initialBounds, localPointer, {
-        preserveAspectRatio: modifiers.shiftKey,
-        fromCenter: modifiers.altKey,
-      });
-
-      const ids = new Set(snapshot.map((element) => element.id));
-      const resized =
-        single && angle !== 0
-          ? [applyRotatedResize(single, initialBounds, nextBounds)]
-          : applyResizeToElements(snapshot, initialBounds, nextBounds);
-
-      patchVisuals({ isTransforming: true, activeHandle: handle });
-
-      applyElements(
-        (previous) => {
-          const byId = new Map(resized.map((element) => [element.id, element]));
-          const next = previous.map(
-            (element) => byId.get(element.id) ?? element,
-          );
-          return updateBoundElements(next, ids, { skipSelf: true });
-        },
-        { commit: false, changedIds: [...ids] },
-      );
-    },
-    [applyElements, patchVisuals],
-  );
-
-  const applyEndpointDrag = useCallback(
-    (
-      arrowId: string,
-      which: "start" | "end",
-      pointer: Point,
-      shiftKey: boolean,
-    ) => {
-      const gap = worldThreshold(MAX_BINDING_GAP_PX);
-      const snapped = applyPointSnap(pointer, {
-        exclude: arrowId,
-        disabled: shiftKey,
-      });
-
-      const arrow = elementsRef.current.find(
-        (element) => element.id === arrowId,
-      );
-      const binds = Boolean(arrow && canBindToShapes(arrow));
-
-      const hovered = binds
-        ? getHoveredBindableElement(snapped, elementsRef.current, gap, arrowId)
-        : null;
-
-      patchVisuals({
-        bindingHighlightId: hovered?.id ?? null,
-        isTransforming: true,
-      });
-
-      applyElements(
-        (previous) =>
-          previous.map((element) => {
-            if (element.id !== arrowId || !isLinearShape(element)) {
-              return element;
-            }
-
-            const anchor =
-              which === "start"
-                ? { x: element.x2, y: element.y2 }
-                : { x: element.x1, y: element.y1 };
-            const target = shiftKey ? snapAngle(anchor, snapped) : snapped;
-
-            // Provisionally rebind while dragging, so the end snaps to the
-            // shape under the pointer and an elbow re-routes as you go.
-            const rebound = mutateElement(element, {
-              ...(which === "start"
-                ? { x1: target.x, y1: target.y }
-                : { x2: target.x, y2: target.y }),
-              ...(which === "start"
-                ? {
-                    startBinding: hovered
-                      ? createBinding(hovered, target, gap)
-                      : null,
-                  }
-                : {
-                    endBinding: hovered
-                      ? createBinding(hovered, target, gap)
-                      : null,
-                  }),
-            });
-
-            return refreshLinearElement(rebound, previous);
-          }),
-        { commit: false, changedIds: [arrowId] },
-      );
-    },
-    [applyElements, applyPointSnap, elementsRef, patchVisuals, worldThreshold],
-  );
-
-  const applyRotation = useCallback(
-    (
-      snapshot: readonly Shape[],
-      pivot: Point,
-      grabOffset: number,
-      pointer: Point,
-      shiftKey: boolean,
-    ) => {
-      const raw =
-        Math.atan2(pointer.y - pivot.y, pointer.x - pivot.x) - grabOffset;
-      // Shift steps in 15° increments, matching the angle constraint elsewhere.
-      const angle = normalizeAngle(shiftKey ? snapAngleValue(raw) : raw);
-
-      const ids = new Set(snapshot.map((element) => element.id));
-      patchVisuals({ isTransforming: true, activeHandle: "rotate" });
-
-      applyElements(
-        (previous) => {
-          const next = previous.map((element) => {
-            const original = snapshot.find((item) => item.id === element.id);
-
-            if (!original) {
-              return element;
-            }
-
-            // Several elements turn as a group: each keeps its own angle offset
-            // and its centre orbits the shared pivot.
-            const rotatedCenter = rotatePoint(
-              getElementCenter(original),
-              pivot,
-              angle,
-            );
-            const currentCenter = getElementCenter(original);
-
-            const moved = translateElement(
-              original,
-              rotatedCenter.x - currentCenter.x,
-              rotatedCenter.y - currentCenter.y,
-            );
-
-            return setElementAngle(
-              moved,
-              normalizeAngle(original.angle + angle),
-            );
-          });
-
-          return updateBoundElements(next, ids, { skipSelf: true });
-        },
-        { commit: false, changedIds: [...ids] },
-      );
-    },
-    [applyElements, patchVisuals],
+  const eraserCtx = useMemo(
+    () => ({
+      elementsRef,
+      erasingRef,
+      trailRef,
+      selectedIdsRef,
+      patchVisuals,
+      resetVisuals,
+      applyElements,
+      setSelectedIds,
+      worldThreshold,
+    }),
+    [
+      elementsRef,
+      selectedIdsRef,
+      patchVisuals,
+      resetVisuals,
+      applyElements,
+      setSelectedIds,
+      worldThreshold,
+    ],
   );
 
   /* ------------------------------------------------------------------ *
@@ -891,7 +385,7 @@ export const usePointerInteraction = ({
         erasingRef.current = new Set();
         trailRef.current = [point];
         interactionRef.current = { type: "erasing", lastWorld: point };
-        accumulateErasures(point, point, event.altKey);
+        accumulateEraserHits(point, point, event.altKey, eraserCtx);
         return;
       }
 
@@ -1121,10 +615,10 @@ export const usePointerInteraction = ({
       };
     },
     [
-      accumulateErasures,
       beginPan,
       canvasRef,
       elementsRef,
+      eraserCtx,
       getSelectedElements,
       getWorldPoint,
       onCreateText,
@@ -1132,10 +626,16 @@ export const usePointerInteraction = ({
       setPending,
       setSelectedIds,
       setTool,
+      selectedIdsRef,
+      styleRef,
+      toolRef,
       spacePressedRef,
       toolLocked,
       viewportRef,
       worldThreshold,
+      applyPointSnap,
+      applyElements,
+      resetVisuals,
     ],
   );
 
@@ -1187,6 +687,7 @@ export const usePointerInteraction = ({
       elementsRef,
       getSelectedElements,
       spacePressedRef,
+      toolRef,
       viewportRef,
       worldThreshold,
     ],
@@ -1284,6 +785,7 @@ export const usePointerInteraction = ({
             interaction.origin,
             target,
             { shiftKey: event.shiftKey, altKey: event.altKey },
+            elementsRef.current,
           );
 
           const { element: next, endTargetId } = resolveDrawnLinear(
@@ -1291,6 +793,8 @@ export const usePointerInteraction = ({
             interaction.startTargetId,
             interaction.origin,
             target,
+            elementsRef.current,
+            worldThreshold(MAX_BINDING_GAP_PX),
           );
 
           interactionRef.current = { ...interaction, element: next };
@@ -1314,11 +818,10 @@ export const usePointerInteraction = ({
             return;
           }
 
-          const next = normalizeElement(
-            mutateElement(interaction.element, {
-              points: [...interaction.element.points, point.x, point.y],
-            }),
-          );
+          const next = {
+            ...interaction.element,
+            points: [...interaction.element.points, point.x, point.y],
+          };
 
           interactionRef.current = {
             type: "freedraw",
@@ -1377,57 +880,62 @@ export const usePointerInteraction = ({
             snapshot,
           };
 
-          applyDrag(
+          applyDragTransform(
             snapshot,
             {
               x: point.x - interaction.origin.x,
               y: point.y - interaction.origin.y,
             },
             !event.ctrlKey && !event.metaKey,
+            transformCtx,
           );
           return;
         }
 
         case "dragging": {
-          applyDrag(
+          applyDragTransform(
             interaction.snapshot,
             {
               x: point.x - interaction.origin.x,
               y: point.y - interaction.origin.y,
             },
             !event.ctrlKey && !event.metaKey,
+            transformCtx,
           );
           return;
         }
 
         case "rotating": {
-          applyRotation(
+          applyRotationTransform(
             interaction.snapshot,
             interaction.pivot,
             interaction.grabOffset,
             point,
             event.shiftKey,
+            transformCtx,
           );
           return;
         }
 
         case "resizing": {
-          applyResize(
+          applyResizeTransform(
             interaction.snapshot,
             interaction.initialBounds,
             interaction.handle,
             point,
             { shiftKey: event.shiftKey, altKey: event.altKey },
+            transformCtx,
           );
           return;
         }
 
         case "endpoint": {
-          applyEndpointDrag(
+          applyEndpointDragTransform(
             interaction.arrowId,
             interaction.which,
             point,
             event.shiftKey,
+            transformCtx,
           );
           return;
         }
@@ -1457,7 +965,12 @@ export const usePointerInteraction = ({
         }
 
         case "erasing": {
-          accumulateErasures(interaction.lastWorld, point, event.altKey);
+          accumulateEraserHits(
+            interaction.lastWorld,
+            point,
+            event.altKey,
+            eraserCtx,
+          );
           interactionRef.current = { type: "erasing", lastWorld: point };
           return;
         }
@@ -1467,20 +980,18 @@ export const usePointerInteraction = ({
       }
     },
     [
-      accumulateErasures,
-      applyDrag,
-      applyElements,
-      applyEndpointDrag,
-      applyResize,
+      applyPointSnap,
       elementsRef,
       getWorldPoint,
       patchVisuals,
       setPending,
       setSelectedIds,
       setViewport,
-      updateDrawnGeometry,
+      transformCtx,
+      eraserCtx,
       updateHoverCursor,
       worldThreshold,
+      applyElements,
     ],
   );
 
@@ -1510,7 +1021,7 @@ export const usePointerInteraction = ({
         case "freedraw": {
           const origin =
             interaction.type === "drawing" ? interaction.origin : point;
-          finishDrawing(interaction.element, origin, point);
+          finishDrawing(interaction.element, origin, point, drawingCtx);
           break;
         }
 
@@ -1611,7 +1122,7 @@ export const usePointerInteraction = ({
         }
 
         case "erasing":
-          commitErasures();
+          commitEraserDeletions(eraserCtx);
           break;
 
         default:
@@ -1627,8 +1138,8 @@ export const usePointerInteraction = ({
     [
       applyElements,
       canvasRef,
-      commitErasures,
-      finishDrawing,
+      drawingCtx,
+      eraserCtx,
       getWorldPoint,
       resetVisuals,
       updateHoverCursor,

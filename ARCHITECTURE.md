@@ -54,6 +54,33 @@ app/
 
 ## The three rules that keep it honest
 
+## Production topology
+
+The realtime server supports a single local process without Redis, but a
+production deployment should set `REDIS_URL` and `REQUIRE_REDIS=true`:
+
+```
+browser -> Next.js app -> /api/generate-drawing
+  |                         |
+  +-> Socket.IO x N --------+-> Redis (adapter + room snapshots)
+                  |
+                  +-> BullMQ -> dedicated AI workers
+```
+
+Socket.IO's Redis adapter broadcasts events between server instances. Canvas
+snapshots are stored with a 24-hour TTL so reconnects and rolling deploys do
+not lose the latest state. BullMQ is reserved for background, non-streaming AI
+requests; the current streaming endpoint remains a request/response path.
+The queue requires an application-specific processor module via
+`GENERATION_PROCESSOR_MODULE`, so provider credentials never enter a browser
+payload or a Socket.IO event.
+
+Run the worker as a separate process with `npm --prefix server run worker`.
+Use a managed Redis service in production, configure `REQUIRE_REDIS=true`, and
+keep the web and worker processes on the same Redis instance. The queue is not
+used for streamed responses because putting a live stream behind a durable job
+would add latency and require a second progress transport.
+
 **1. One coordinate transform.** `utils/viewport.ts` defines
 
 ```
