@@ -1,4 +1,5 @@
 const roomStore = require('../state');
+const { clampTag, isValidRoomId } = require('../validation');
 
 /**
  * Handlers for room membership and user lifecycle events.
@@ -6,11 +7,24 @@ const roomStore = require('../state');
 function registerRoomHandlers(io, socket) {
   // Handle join room event
   socket.on('join-room', (data) => {
-    const { roomId, userId, userTag } = data;
-    if (!roomId || !userId) return;
+    const { roomId, userId, userTag } = data || {};
+    if (!isValidRoomId(roomId)) return;
+    if (typeof userId !== 'string' || !userId || userId.length > 128) return;
+
+    // Leave any previously joined room so a socket belongs to exactly one.
+    const previousRoom = roomStore.userRooms.get(socket.id);
+    if (previousRoom && previousRoom !== roomId) {
+      socket.leave(previousRoom);
+      const { isEmpty } = roomStore.removeUserBySocketId(socket.id);
+      if (!isEmpty) {
+        io.to(previousRoom).emit('active-users', {
+          users: roomStore.getRoomUsers(previousRoom),
+        });
+      }
+    }
 
     socket.join(roomId);
-    roomStore.addUserToRoom(roomId, userId, userTag, socket.id);
+    roomStore.addUserToRoom(roomId, userId, clampTag(userTag), socket.id);
 
     const users = roomStore.getRoomUsers(roomId);
     io.to(roomId).emit('active-users', { users });

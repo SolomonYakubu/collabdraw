@@ -1,0 +1,83 @@
+/**
+ * Payload guards: caps and light schema checks for client-sent data.
+ *
+ * The server relays collaboration data between peers, so every payload must be
+ * bounded before it is stored or rebroadcast — otherwise a single malicious or
+ * buggy client can exhaust memory for the whole process.
+ */
+
+/** Maximum shapes accepted in one update or full canvas state. */
+const MAX_SHAPES_PER_UPDATE = 500;
+
+/** Maximum shapes retained per room. */
+const MAX_SHAPES_PER_ROOM = 2000;
+
+/** Maximum serialized size (bytes) of one shape object. */
+const MAX_SHAPE_BYTES = 32 * 1024;
+
+/** Maximum length of user-supplied tags/names. */
+const MAX_TAG_LENGTH = 64;
+
+/** Maximum length of a room identifier. */
+const MAX_ROOM_ID_LENGTH = 128;
+
+const isPlainObject = (value) =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Keep only plain-object shapes, drop oversized entries, and cap the count.
+ * Returns null when nothing usable remains.
+ */
+const sanitizeShapes = (shapes) => {
+  if (!Array.isArray(shapes)) return null;
+
+  const cleaned = [];
+  for (const shape of shapes.slice(0, MAX_SHAPES_PER_UPDATE)) {
+    if (!isPlainObject(shape)) continue;
+    if (typeof shape.id !== "string" || shape.id.length > 128) continue;
+    try {
+      if (JSON.stringify(shape).length > MAX_SHAPE_BYTES) continue;
+    } catch {
+      // Circular or otherwise unserializable — reject the entry.
+      continue;
+    }
+    cleaned.push(shape);
+  }
+
+  return cleaned.length > 0 ? cleaned : null;
+};
+
+/** Cap an array of deleted shape ids to strings of bounded length. */
+const sanitizeDeletedIds = (ids) => {
+  if (!Array.isArray(ids)) return null;
+  const cleaned = ids
+    .filter((id) => typeof id === "string" && id.length <= 128)
+    .slice(0, MAX_SHAPES_PER_UPDATE);
+  return cleaned.length > 0 ? cleaned : null;
+};
+
+/** Validate a room id: non-empty string of bounded length. */
+const isValidRoomId = (roomId) =>
+  typeof roomId === "string" &&
+  roomId.length > 0 &&
+  roomId.length <= MAX_ROOM_ID_LENGTH;
+
+/** Clamp a user tag to a safe display length. */
+const clampTag = (tag) =>
+  typeof tag === "string" ? tag.slice(0, MAX_TAG_LENGTH) : undefined;
+
+/** Clamp a coordinate to a finite number. */
+const clampCoordinate = (value) =>
+  typeof value === "number" && Number.isFinite(value)
+    ? Math.max(-1e6, Math.min(1e6, value))
+    : undefined;
+
+module.exports = {
+  MAX_SHAPES_PER_ROOM,
+  MAX_SHAPES_PER_UPDATE,
+  clampCoordinate,
+  clampTag,
+  isValidRoomId,
+  sanitizeDeletedIds,
+  sanitizeShapes,
+};

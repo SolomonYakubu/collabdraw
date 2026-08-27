@@ -13,6 +13,8 @@
  * into React state.
  */
 import { useCallback, useMemo, useRef, useState } from "react";
+
+import { useLatest } from "../useLatest";
 import {
   ELEMENT_TYPES,
   isLinearShape,
@@ -259,14 +261,9 @@ export const usePointerInteraction = ({
   const [hoverCursor, setHoverCursor] = useState<string>("default");
 
   // Selection is read inside pointer handlers, which must not go stale.
-  const selectedIdsRef = useRef(selectedIds);
-  selectedIdsRef.current = selectedIds;
-
-  const styleRef = useRef(style);
-  styleRef.current = style;
-
-  const toolRef = useRef(tool);
-  toolRef.current = tool;
+  const selectedIdsRef = useLatest(selectedIds);
+  const styleRef = useLatest(style);
+  const toolRef = useLatest(tool);
 
   const pendingRef = useRef<Shape | null>(null);
   const setPending = useCallback(

@@ -1,16 +1,28 @@
 const roomStore = require('../state');
+const {
+  MAX_SHAPES_PER_ROOM,
+  isValidRoomId,
+  sanitizeDeletedIds,
+  sanitizeShapes,
+} = require('../validation');
 
 /**
  * Handlers for canvas state persistence and shape update broadcasting.
+ * All client payloads are validated and capped before storage or relay.
  */
 function registerCanvasHandlers(io, socket) {
   // Handle canvas state sync responses from peers
   socket.on('canvas-state-response', (data) => {
     const { roomId, targetUserId, shapes, userId } = data || {};
-    if (!roomId) return;
+    if (!isValidRoomId(roomId)) return;
 
-    if (shapes && shapes.length > 0) {
-      roomStore.setCanvasState(roomId, shapes);
+    // Only trust state claims from sockets actually in that room; otherwise a
+    // peer could overwrite the cached canvas for everyone joining later.
+    if (roomStore.userRooms.get(socket.id) !== roomId) return;
+
+    const safeShapes = sanitizeShapes(shapes);
+    if (safeShapes) {
+      roomStore.setCanvasState(roomId, safeShapes.slice(0, MAX_SHAPES_PER_ROOM));
     }
 
     const targetUser = roomStore.getUserInRoom(roomId, targetUserId);
@@ -18,7 +30,7 @@ function registerCanvasHandlers(io, socket) {
       io.to(targetUser.socketId).emit('canvas-state-sync', {
         roomId,
         userId,
-        shapes,
+        shapes: safeShapes,
       });
       console.log(`Sent canvas state from ${userId} to ${targetUserId}`);
     }
@@ -27,14 +39,23 @@ function registerCanvasHandlers(io, socket) {
   // Handle canvas drawing updates
   socket.on('canvas-update', (data) => {
     const { roomId, shapes, deletedShapeIds, fullUpdate } = data || {};
-    if (typeof roomId !== 'string' || !roomId) {
-      return;
-    }
+    if (!isValidRoomId(roomId)) return;
+    if (roomStore.userRooms.get(socket.id) !== roomId) return;
 
-    roomStore.updateCanvasState(roomId, shapes, deletedShapeIds, Boolean(fullUpdate));
+    const safeShapes = sanitizeShapes(shapes);
+    const safeDeleted = sanitizeDeletedIds(deletedShapeIds);
 
-    // Forward the update to all other clients in the room
-    socket.to(roomId).emit('canvas-update', data);
+    if (!safeShapes && !safeDeleted) return;
+
+    roomStore.updateCanvasState(roomId, safeShapes, safeDeleted, Boolean(fullUpdate));
+
+    // Forward only the sanitized fields to all other clients in the room.
+    socket.to(roomId).emit('canvas-update', {
+      roomId,
+      shapes: safeShapes,
+      deletedShapeIds: safeDeleted,
+      fullUpdate: Boolean(fullUpdate),
+    });
   });
 }
 
