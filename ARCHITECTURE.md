@@ -47,6 +47,7 @@ app/
 ├── hooks/canvas/useLocalSceneAutosave.ts  The no-account tier: localStorage.
 ├── services/canvas/localScene.ts    Read/write the browser's copy of the scene.
 ├── services/canvas/sceneFile.ts     The .collabdraw document format.
+├── services/collaboration/identity.ts  Your presence id and editable display name.
 ├── lib/
 │   ├── db.ts                    Postgres pool and the board queries. Throws
 │   │                            DatabaseNotConfiguredError when there is no
@@ -465,6 +466,25 @@ that cookie is the only writer of board ownership —
 deliberately kept separate. Middleware sets a new id on the *request* as well as
 the response, so the board created while rendering a first-ever share-link visit
 is stamped with the visitor's real id.
+
+**Your display name** is the third id, and the only one you can edit:
+`localStorage.collabdraw_userName`, owned by `services/collaboration/identity.ts`.
+It is deliberately not `cd_device` (that would tie a name you can change to a
+claim you cannot) and not `collabdraw_userId` (nothing displays that). It used to
+be minted on every mount, so the label over your cursor was a different random
+animal after each reload and nobody could learn who you were.
+
+Renaming goes three places at once: localStorage, the `identityRef` that stamps
+outgoing `cursor-position` messages, and the server's roster via
+`update-user-name`. That handler takes the user id from `socket.data`, never from
+the payload — reading it off the wire would let any client rename anybody else in
+the room — and re-broadcasts `active-users`, which the client also uses to
+relabel peers' cursors so a rename shows up without waiting for their next
+pointer move. The name is held in a ref rather than a dependency of the socket
+effect, because reconnecting on every rename would drop everyone's cursors and
+re-run hydration for a change of label. It is editable in two places: the field
+at the top of the collaborator list, and a main-menu item — the people button
+only exists in a room, and the name you want is the one you set *before* sharing.
 
 Opening an unknown id creates the board (`insert ... on conflict do nothing`) so
 old share links and collaborators' links never 404. Only a caller with a real

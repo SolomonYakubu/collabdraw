@@ -14,6 +14,10 @@
  *    canvas. It now asks the scene for its current contents.
  *  - connection problems raised `alert()` on every one of the five reconnect
  *    attempts. Connection state is surfaced in the UI instead.
+ *  - the display name was minted fresh on every mount, so the label over your
+ *    cursor was a different random animal after each reload. It now comes from
+ *    `services/collaboration/identity`, which persists it, and `setUserName`
+ *    lets you change it without tearing the socket down.
  */
 import React, {
   createContext,
@@ -25,11 +29,15 @@ import React, {
   useState,
 } from "react";
 import { io, type Socket } from "socket.io-client";
-import { nanoid } from "nanoid";
 
 import type { Point, Shape } from "../types/shapes";
 import type { CursorPositionsMap, User } from "../types/collaboration";
 import { restoreElements } from "../services/canvas/elements";
+import {
+  readUserId,
+  readUserName,
+  writeUserName,
+} from "../services/collaboration/identity";
 
 const CURSOR_THROTTLE_MS = 50;
 const PENDING_THROTTLE_MS = 40;
@@ -56,6 +64,17 @@ interface CollaborationContextValue {
   isEnabled: boolean;
   roomId: string | null;
   userId: string | null;
+  /**
+   * The label over your own cursor. Persisted, so it is the same name next time
+   * — and editable, which is why it is state here rather than a value the socket
+   * effect mints on mount.
+   */
+  userName: string;
+  /**
+   * Rename yourself. Returns false when the input held nothing usable, so the
+   * caller can keep the field open instead of committing a blank label.
+   */
+  setUserName: (value: string) => boolean;
   users: User[];
   cursors: CursorPositionsMap;
   remoteInProgress: Record<string, Shape>;
@@ -87,52 +106,6 @@ export function useCollaborationContext(): CollaborationContextValue {
   return context;
 }
 
-const ADJECTIVES = [
-  "Happy",
-  "Sunny",
-  "Clever",
-  "Swift",
-  "Bright",
-  "Creative",
-  "Smart",
-  "Quick",
-  "Calm",
-  "Friendly",
-];
-
-const NOUNS = [
-  "Tiger",
-  "Panda",
-  "Eagle",
-  "Fox",
-  "Dolphin",
-  "Wolf",
-  "Bear",
-  "Hawk",
-  "Koala",
-  "Owl",
-];
-
-const generateUserTag = (): string =>
-  `${ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)]}${
-    NOUNS[Math.floor(Math.random() * NOUNS.length)]
-  }`;
-
-const readStoredUserId = (): string => {
-  try {
-    const stored = window.localStorage.getItem("collabdraw_userId");
-    if (stored) {
-      return stored;
-    }
-    const created = nanoid(8);
-    window.localStorage.setItem("collabdraw_userId", created);
-    return created;
-  } catch {
-    // Private browsing or blocked storage: a per-session id is fine.
-    return nanoid(8);
-  }
-};
-
 export const CollaborationContextProvider: React.FC<{
   /**
    * The board being edited, provided by the /board/[id] route. `null` on the
@@ -156,15 +129,44 @@ export const CollaborationContextProvider: React.FC<{
   );
   const [shareableLink, setShareableLink] = useState("");
   const [linkCopied, setLinkCopied] = useState(false);
+  const [userName, setUserNameState] = useState("");
 
   const identityRef = useRef<{ roomId: string; userId: string; tag: string } | null>(
     null,
   );
+  /**
+   * The live display name, read through to localStorage on first use.
+   *
+   * A ref rather than the `userName` state because the socket effect reads it:
+   * depending on the state would tear the connection down and reconnect on every
+   * rename, which drops everyone's cursors and re-runs hydration for a change of
+   * label. The name travels over the wire instead (`update-user-name`).
+   */
+  const userNameRef = useRef<string | null>(null);
   const lastCursorSentRef = useRef(0);
   const lastPendingSentRef = useRef(0);
   const copyTimerRef = useRef<number | null>(null);
 
+  /** Never called during SSR — every caller is inside an effect or a handler. */
+  const currentUserName = useCallback((): string => {
+    if (userNameRef.current === null) {
+      userNameRef.current = readUserName();
+    }
+    return userNameRef.current;
+  }, []);
+
   useEffect(() => setIsClient(true), []);
+
+  /*
+   * Your own name is yours whether or not there is a room: it is the label the
+   * next session you start will carry, so the menu can offer it on the local
+   * canvas too.
+   */
+  useEffect(() => {
+    if (isClient) {
+      setUserNameState(currentUserName());
+    }
+  }, [currentUserName, isClient]);
 
   const setEventHandlers = useCallback(
     (handlers: CollaborationEventHandlers) => {
@@ -178,8 +180,8 @@ export const CollaborationContextProvider: React.FC<{
       return;
     }
 
-    const currentUserId = readStoredUserId();
-    const tag = generateUserTag();
+    const currentUserId = readUserId();
+    const tag = currentUserName();
 
     const currentRoomId = roomIdProp;
 
@@ -207,10 +209,13 @@ export const CollaborationContextProvider: React.FC<{
 
     socket.on("connect", () => {
       setIsConnected(true);
+      // `currentUserName()` rather than the captured `tag`: a reconnect after a
+      // rename must rejoin under the new name, not the one this effect started
+      // with.
       socket.emit("join-room", {
         roomId: currentRoomId,
         userId: currentUserId,
-        userTag: tag,
+        userTag: currentUserName(),
       });
     });
 
@@ -228,7 +233,28 @@ export const CollaborationContextProvider: React.FC<{
     });
 
     socket.on("active-users", (data: { users?: User[] }) => {
-      setUsers(Array.isArray(data?.users) ? data.users : []);
+      const incoming = Array.isArray(data?.users) ? data.users : [];
+      setUsers(incoming);
+
+      /*
+       * The roster is authoritative about names, so a peer who renames is
+       * relabelled over their cursor now instead of at their next pointer move.
+       */
+      const tagById = new Map(incoming.map((user) => [user.id, user.tag]));
+      setCursors((current) => {
+        let changed = false;
+        const next = Object.fromEntries(
+          Object.entries(current).map(([id, cursor]) => {
+            const tag = tagById.get(id);
+            if (!tag || tag === cursor.tag) {
+              return [id, cursor];
+            }
+            changed = true;
+            return [id, { ...cursor, tag }];
+          }),
+        );
+        return changed ? next : current;
+      });
     });
 
     socket.on("canvas-state-sync", (data: { userId?: string; shapes?: unknown }) => {
@@ -342,7 +368,7 @@ export const CollaborationContextProvider: React.FC<{
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [isClient, roomIdProp]);
+  }, [currentUserName, isClient, roomIdProp]);
 
   /* Drop cursors of people who stopped moving, so labels do not pile up. */
   useEffect(() => {
@@ -387,6 +413,41 @@ export const CollaborationContextProvider: React.FC<{
       ...payload,
     });
   }, []);
+
+  /**
+   * Rename yourself.
+   *
+   * Three places have to agree: localStorage (so it survives a reload), the
+   * identity the cursor messages are stamped with, and the server's roster. The
+   * local roster row is patched optimistically because the server echo only
+   * arrives if there is a room — on the local canvas at `/` there is no socket
+   * at all, and the name still has to stick.
+   */
+  const setUserName = useCallback(
+    (value: string): boolean => {
+      const stored = writeUserName(value);
+      if (!stored) {
+        return false;
+      }
+
+      userNameRef.current = stored;
+      setUserNameState(stored);
+
+      const identity = identityRef.current;
+      if (identity) {
+        identity.tag = stored;
+        setUsers((current) =>
+          current.map((user) =>
+            user.id === identity.userId ? { ...user, tag: stored } : user,
+          ),
+        );
+      }
+
+      emit("update-user-name", { userTag: stored });
+      return true;
+    },
+    [emit],
+  );
 
   const sendCursor = useCallback(
     (point: Point) => {
@@ -483,6 +544,8 @@ export const CollaborationContextProvider: React.FC<{
       isEnabled: isClient,
       roomId,
       userId,
+      userName,
+      setUserName,
       users,
       cursors,
       remoteInProgress,
@@ -510,8 +573,10 @@ export const CollaborationContextProvider: React.FC<{
       sendPendingElement,
       sendScene,
       setEventHandlers,
+      setUserName,
       shareableLink,
       userId,
+      userName,
       users,
     ],
   );

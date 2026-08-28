@@ -48,6 +48,19 @@ class RoomStore {
   }
 
   /**
+   * Rename a user already in a room. Returns whether anything changed, so the
+   * caller can skip a pointless `active-users` broadcast.
+   */
+  setUserTag(roomId, userId, userTag) {
+    const user = this.activeRooms.get(roomId)?.get(userId);
+    if (!user || user.tag === userTag) {
+      return false;
+    }
+    user.tag = userTag;
+    return true;
+  }
+
+  /**
    * Remove a user from their active room on disconnect.
    */
   removeUserBySocketId(socketId) {

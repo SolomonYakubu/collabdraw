@@ -107,6 +107,34 @@ function registerRoomHandlers(io, socket) {
     }
   });
 
+  /**
+   * Change your own display name mid-session.
+   *
+   * The identity comes from `socket.data`, never from the payload: taking the
+   * userId off the wire would let any client rename anybody else in the room.
+   * Only the tag is read from the message, and `clampTag` bounds it.
+   */
+  socket.on('update-user-name', async (data) => {
+    const roomId = socket.data && socket.data.roomId;
+    const userId = socket.data && socket.data.userId;
+    if (!roomId || !userId || roomStore.userRooms.get(socket.id) !== roomId) {
+      return;
+    }
+
+    const safeTag = clampTag(data && data.userTag);
+    if (!safeTag || safeTag === socket.data.userTag) {
+      return;
+    }
+
+    // Both stores: `socket.data` is what the cluster-wide roster reads,
+    // `roomStore` what the single-instance fallback reads.
+    socket.data.userTag = safeTag;
+    roomStore.setUserTag(roomId, userId, safeTag);
+
+    const users = await getClusterRoomUsers(io, roomId);
+    io.to(roomId).emit('active-users', { users });
+  });
+
   // Handle user disconnect
   socket.on('disconnect', async () => {
     const { roomId, user, isEmpty } = roomStore.removeUserBySocketId(socket.id);

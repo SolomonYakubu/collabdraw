@@ -26,6 +26,9 @@ export interface MobileHeaderProps {
   isConnected?: boolean;
   users?: Array<{ id: string; tag: string }>;
   currentUserId?: string | null;
+  /** Your own display name, editable at the top of the collaborator list. */
+  userName?: string;
+  onRenameUser?: (value: string) => boolean;
   onToggleAI?: () => void;
   isAIPanelOpen?: boolean;
   isAiGenerating?: boolean;
@@ -48,6 +51,8 @@ const MobileHeader: React.FC<MobileHeaderProps> = ({
   isConnected = false,
   users = [],
   currentUserId,
+  userName,
+  onRenameUser,
   onToggleAI,
   isAIPanelOpen = false,
   isAiGenerating = false,
@@ -97,6 +102,8 @@ const MobileHeader: React.FC<MobileHeaderProps> = ({
               <CollaboratorsButton
                 users={users}
                 currentUserId={currentUserId}
+                userName={userName}
+                onRenameUser={onRenameUser}
                 align="left"
               />
             </>

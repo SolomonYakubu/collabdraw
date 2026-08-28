@@ -63,6 +63,9 @@ export interface ToolbarProps {
    */
   users?: Array<{ id: string; tag: string }>;
   currentUserId?: string | null;
+  /** Your own display name, editable at the top of the collaborator list. */
+  userName?: string;
+  onRenameUser?: (value: string) => boolean;
   onToggleAI?: () => void;
   isAIPanelOpen?: boolean;
   isAiGenerating?: boolean;
@@ -152,6 +155,8 @@ const Toolbar: React.FC<ToolbarProps> = ({
   linkCopied,
   users,
   currentUserId,
+  userName,
+  onRenameUser,
   onToggleAI,
   isAIPanelOpen = false,
   isAiGenerating = false,
@@ -256,7 +261,12 @@ const Toolbar: React.FC<ToolbarProps> = ({
     )}
 
     {users && (
-      <CollaboratorsButton users={users} currentUserId={currentUserId} />
+      <CollaboratorsButton
+        users={users}
+        currentUserId={currentUserId}
+        userName={userName}
+        onRenameUser={onRenameUser}
+      />
     )}
 
     {(onCycleTheme || onClear) && <Divider />}

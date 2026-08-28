@@ -24,6 +24,7 @@ import {
   FiSun,
   FiTrash2,
   FiUnlock,
+  FiUser,
   FiUsers,
 } from "react-icons/fi";
 
@@ -73,6 +74,7 @@ import { useBoardPersistence } from "../hooks/canvas/useBoardPersistence";
 import { useLocalSceneAutosave } from "../hooks/canvas/useLocalSceneAutosave";
 import { useTheme, type ThemePreference } from "../hooks/useTheme";
 import { useCollaborationContext } from "../context/CollaborationContext";
+import { MAX_USER_NAME_LENGTH } from "../services/collaboration/identity";
 
 import CanvasSurface from "./canvas/CanvasSurface";
 import TextEditorOverlay from "./canvas/TextEditorOverlay";
@@ -201,7 +203,7 @@ const Canvas: React.FC<CanvasProps> = ({
   const [contextMenu, setContextMenu] = useState<Point | null>(null);
   const [title, setTitle] = useState(initialTitle ?? "Untitled board");
   /** Which dialog is on screen, if any. `null` means the canvas is unblocked. */
-  const [dialog, setDialog] = useState<"rename" | "reset" | null>(null);
+  const [dialog, setDialog] = useState<"rename" | "reset" | "name" | null>(null);
   const { toasts, show: showToast, dismiss: dismissToast } = useToasts();
 
   const { preference: themePreference, theme, cycle: cycleTheme } = useTheme();
@@ -226,6 +228,8 @@ const Canvas: React.FC<CanvasProps> = ({
     sendPendingElement,
     setEventHandlers,
     userId,
+    userName,
+    setUserName,
     roomId,
   } = collaboration;
 
@@ -915,6 +919,26 @@ const Canvas: React.FC<CanvasProps> = ({
     [isCollaborative, resetHistory, sendScene, setViewport, showToast],
   );
 
+  /**
+   * Change the name over your own cursor. Local-first: it is stored in this
+   * browser, so it is also the name the next session you start will carry — the
+   * menu offers it whether or not there is a room to announce it to.
+   */
+  const renameSelf = useCallback(
+    (next: string) => {
+      setDialog(null);
+      if (!setUserName(next)) {
+        showToast("That name is empty — keeping the old one.", {
+          kind: "error",
+          id: "rename-self",
+        });
+        return;
+      }
+      showToast("Name updated", { kind: "success", id: "rename-self" });
+    },
+    [setUserName, showToast],
+  );
+
   const resetCanvas = useCallback(() => {
     setDialog(null);
     clearCanvas();
@@ -978,6 +1002,15 @@ const Canvas: React.FC<CanvasProps> = ({
         hint: isCollaborative && linkCopied ? "Copied" : undefined,
         separatorBefore: true,
       },
+      // Also editable in the collaborator list, but that button only exists in a
+      // room — and the name you want is the one you set *before* sharing.
+      {
+        id: "user-name",
+        label: "Your name…",
+        icon: <FiUser size={15} />,
+        onSelect: () => setDialog("name"),
+        hint: userName || undefined,
+      },
       {
         id: "theme",
         label: "Theme",
@@ -1016,6 +1049,7 @@ const Canvas: React.FC<CanvasProps> = ({
       startCollaboration,
       themePreference,
       toolLocked,
+      userName,
     ],
   );
 
@@ -1121,6 +1155,8 @@ const Canvas: React.FC<CanvasProps> = ({
         isConnected={isConnected}
         users={users}
         currentUserId={userId}
+        userName={userName}
+        onRenameUser={setUserName}
         onToggleAI={openAIPanel}
         isAIPanelOpen={isAIPanelOpen}
         isAiGenerating={ai.isGenerating}
@@ -1158,6 +1194,18 @@ const Canvas: React.FC<CanvasProps> = ({
         onCancel={() => setDialog(null)}
       />
 
+      <PromptDialog
+        open={dialog === "name"}
+        title="Your name"
+        description="The label over your cursor, and how you appear in the collaborator list. Stored in this browser."
+        initialValue={userName}
+        placeholder="e.g. Ada"
+        maxLength={MAX_USER_NAME_LENGTH}
+        confirmLabel="Save"
+        onConfirm={renameSelf}
+        onCancel={() => setDialog(null)}
+      />
+
       <ConfirmDialog
         open={dialog === "reset"}
         title="Reset the canvas?"
@@ -1191,6 +1239,8 @@ const Canvas: React.FC<CanvasProps> = ({
           linkCopied={linkCopied}
           users={isCollaborative ? users : undefined}
           currentUserId={userId}
+          userName={userName}
+          onRenameUser={setUserName}
           onToggleAI={openAIPanel}
           isAIPanelOpen={isAIPanelOpen}
           isAiGenerating={ai.isGenerating}
