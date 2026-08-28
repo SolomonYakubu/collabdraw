@@ -45,8 +45,12 @@ const ZOOM_STEP = 1.1;
 
 export const useViewport = (
   containerRef: React.RefObject<HTMLElement | null>,
+  /** Restored pan and zoom (a saved board or local scene); default otherwise. */
+  initialViewport?: Viewport | null,
 ): UseViewportResult => {
-  const [viewport, setViewport] = useState<Viewport>(INITIAL_VIEWPORT);
+  const [viewport, setViewport] = useState<Viewport>(
+    initialViewport ?? INITIAL_VIEWPORT,
+  );
   const [size, setSize] = useState<CanvasSize>({ width: 0, height: 0 });
   const [devicePixelRatio, setDevicePixelRatio] = useState(1);
 

@@ -161,14 +161,22 @@ app/
 ├── utils/            geometry.ts (pure maths), viewport.ts (the one transform)
 ├── services/canvas/  elements, hitTest, linearElement, elbowRouter, bindings,
 │                     pointSnapping, boundText, transform, snapping,
-│                     textMeasure, renderer
+│                     textMeasure, renderer, hydration
 ├── services/ai/      intent, graph, grid, scene, layout, build, buildScene,
 │                     describeScene
 ├── hooks/canvas/     useScene, useViewport, usePointerInteraction,
-│                     useTextEditor, useKeyboardShortcuts, useAIAssistant
+│                     useTextEditor, useKeyboardShortcuts, useAIAssistant,
+│                     useBoardPersistence, useLocalSceneAutosave
 ├── context/          CollaborationContext (socket transport)
-├── components/       Canvas.tsx and canvas/ (surface, overlays, UI)
-└── api/              generate-drawing (AI endpoint)
+├── lib/              db.ts (Postgres), boardAccess.ts (device cookie, limits)
+├── components/       Canvas.tsx, Dashboard.tsx and canvas/ (surface, overlays, UI)
+├── page.tsx          the canvas — the app's front door
+├── board/[id]/       a room: shared scene, live collaboration
+├── boards/           the gallery of boards saved to the cloud
+└── api/              generate-drawing (AI endpoint), boards/* (persistence)
+middleware.ts         issues the anonymous `cd_device` cookie
+migrations/           numbered .sql schema migrations
+scripts/migrate.mjs   migration runner (npm run db:migrate)
 server/               Socket.IO backend service (realtime collaboration)
 ```
 
@@ -187,12 +195,86 @@ Or separately with `npm run dev` and `npm run server`. Collaboration is
 optional — with the socket server down the editor works locally and shows
 "Offline".
 
+### Where your drawing lives
+
+Opening the app puts you on a canvas with your last drawing already on it. That
+needs no account and no database: the scene is kept in this browser
+(`localStorage.collabdraw_scene`, written on a 300 ms debounce and flushed when
+the tab goes away), the way excalidraw.com works.
+
+Everything else is a choice in the main menu, top-left:
+
+| Menu item | What it does |
+|---|---|
+| Open… / Save to file | A `.collabdraw` document — the scene, portable. |
+| Export as image | PNG of the current scene. |
+| Save to my boards | Creates a board in Postgres and moves you to `/board/<id>`. |
+| Rename board… | In a room, where "Save to my boards" would be: the board is already saved, so the menu offers its name instead. The canvas itself carries no title field. |
+| My boards | `/boards`, the gallery of what you have saved. |
+| Live collaboration | Starts a room from the drawing on screen and hands you a share link. |
+
+Live collaboration needs neither an account nor a saved board: the share button
+in the toolbar mints a room, carries your current scene into it, and the socket
+server holds the shared scene from there. Leaving the room leaves your local
+canvas as it was — while you are in a room the browser copy is left alone, so a
+room can never overwrite your solo drawing (the same lock Excalidraw takes).
+Who else is in the room is behind the people button in the toolbar — a click
+shows the list, and nothing sits on the canvas the rest of the time.
+
+### Boards and the database
+
+`/board/<id>` is a room whose scene is also stored in Postgres (Neon), so it
+survives a reload, a socket-server restart and an expired Redis snapshot.
+
+Point `.env` at a database and apply the schema once:
+
+```bash
+# Neon (or any managed Postgres) — from the project's connection details.
+# verify-full rather than Neon's default `require`: identical behaviour in pg 8,
+# and it silences pg's warning that the two will diverge in v9.
+DATABASE_URL=postgres://user:pass@ep-xxx-pooler.region.aws.neon.tech/dbname?sslmode=verify-full
+DATABASE_URL_UNPOOLED=postgres://user:pass@ep-xxx.region.aws.neon.tech/dbname?sslmode=verify-full
+
+# …or a local server, where there is no certificate to verify:
+DATABASE_URL=postgres://$(whoami)@localhost:5432/collabdraw?sslmode=disable
+
+npm run db:migrate   # applies migrations/*.sql, tracked in schema_migrations
+```
+
+Then confirm it before touching the UI:
+
+```bash
+npm run db:check     # connects, names the server, checks the tables exist
+```
+
+TLS is chosen from the connection string — verified for a remote host, skipped
+for `localhost`/`127.0.0.1` or an explicit `sslmode=disable`, and unverified only
+with `sslmode=no-verify` (a host behind a private CA). `npm run dev`,
+`npm run server`, `npm run db:migrate` and `npm run db:check` all read `.env`, so
+a new string reaches the app and the socket server on their next restart. Both
+processes need it: the app renders the board, the socket server writes the merged
+scene.
+
+Without `DATABASE_URL` everything except cloud saving still works: the canvas
+draws, autosaves locally, exports, and collaborates. The board layer never
+attempts a connection — it fails fast with `DatabaseNotConfiguredError`, so
+"Save to my boards" answers with a plain "not configured on this deployment"
+(503) instead of a 500, and `/boards` says the store is unreachable rather than
+showing an empty gallery.
+
+Ownership is anonymous: a `cd_device` cookie issued by `middleware.ts` marks the
+boards you created, and a board opened through someone else's share link joins
+your gallery too. Anyone with the link can edit — there is no per-board access
+control yet.
+
 ### Environment
 
 ```
 GEMINI_API_KEY=...          # server-side only, for the AI endpoint
 GEMINI_MODEL=...            # optional model override
 NEXT_PUBLIC_SOCKET_URL=...  # defaults to http://localhost:3001
+DATABASE_URL=...            # Neon pooled string, used by the app and socket server
+DATABASE_URL_UNPOOLED=...   # direct string, used only by npm run db:migrate
 ```
 
 ## Tests

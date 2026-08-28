@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist } from "next/font/google";
 import "./globals.css";
-import { CollaborationContextProvider } from "./context/CollaborationContext";
 
 const geist = Geist({
   variable: "--font-ui",
@@ -105,7 +104,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
       <body className={`${geist.variable} antialiased`}>
-        <CollaborationContextProvider>{children}</CollaborationContextProvider>
+        {children}
       </body>
     </html>
   );

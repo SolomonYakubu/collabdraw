@@ -6,6 +6,8 @@ const config = require("./config");
 const initSocket = require("./socket");
 const roomStore = require("./state");
 const { closeRedis } = require("./redis");
+const { flushAllRooms } = require("./roomState");
+const { closePool } = require("./db");
 const {
   closeGenerationQueue,
   enqueueGenerationJob,
@@ -90,8 +92,11 @@ server.listen(config.port, () => {
 const shutdown = () => {
   console.log("Shutting down CollabDraw Socket.IO server...");
   io.close(async () => {
+    // Persist any dirty rooms before the process exits.
+    await flushAllRooms().catch(() => {});
     await closeGenerationQueue().catch(() => {});
     await closeRedis().catch(() => {});
+    await closePool().catch(() => {});
     server.close(() => {
       console.log("Server has been closed");
       process.exit(0);

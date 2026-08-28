@@ -36,8 +36,14 @@ const PENDING_THROTTLE_MS = 40;
 const STALE_CURSOR_MS = 10_000;
 
 export interface CollaborationEventHandlers {
-  /** Replace the whole scene (initial sync, remote undo/redo, clear). */
+  /** Replace the whole scene (remote undo/redo, clear). */
   onScene?: (elements: Shape[]) => void;
+  /**
+   * Initial room hydration (`canvas-state-sync` on join). Kept separate from
+   * `onScene` so the editor can refuse an empty hydration that would blank a
+   * board it already loaded from the database.
+   */
+  onInitialScene?: (elements: Shape[]) => void;
   /** Merge individual elements. */
   onElements?: (elements: Shape[]) => void;
   onDeletions?: (ids: string[]) => void;
@@ -55,7 +61,8 @@ interface CollaborationContextValue {
   remoteInProgress: Record<string, Shape>;
   shareableLink: string;
   linkCopied: boolean;
-  copyShareableLink: () => void;
+  /** Resolves false when the clipboard is unavailable or refused the write. */
+  copyShareableLink: () => Promise<boolean>;
   sendCursor: (point: Point) => void;
   sendScene: (elements: Shape[]) => void;
   sendElements: (elements: Shape[]) => void;
@@ -127,8 +134,14 @@ const readStoredUserId = (): string => {
 };
 
 export const CollaborationContextProvider: React.FC<{
+  /**
+   * The board being edited, provided by the /board/[id] route. `null` on the
+   * local canvas at `/`: the context still exists (so `Canvas` can call the
+   * hook unconditionally) but no socket is opened.
+   */
+  roomId: string | null;
   children: React.ReactNode;
-}> = ({ children }) => {
+}> = ({ roomId: roomIdProp, children }) => {
   const socketRef = useRef<Socket | null>(null);
   const handlersRef = useRef<CollaborationEventHandlers>({});
 
@@ -161,26 +174,20 @@ export const CollaborationContextProvider: React.FC<{
   );
 
   useEffect(() => {
-    if (!isClient) {
+    if (!isClient || !roomIdProp) {
       return;
     }
 
     const currentUserId = readStoredUserId();
     const tag = generateUserTag();
 
-    let currentRoomId = new URLSearchParams(window.location.search).get("roomId");
-    if (!currentRoomId) {
-      currentRoomId = nanoid(10);
-      const url = new URL(window.location.href);
-      url.searchParams.set("roomId", currentRoomId);
-      window.history.replaceState({}, "", url);
-    }
+    const currentRoomId = roomIdProp;
 
     identityRef.current = { roomId: currentRoomId, userId: currentUserId, tag };
     setUserId(currentUserId);
     setRoomId(currentRoomId);
     setShareableLink(
-      `${window.location.origin}${window.location.pathname}?roomId=${currentRoomId}`,
+      `${window.location.origin}/board/${currentRoomId}`,
     );
 
     const socketUrl =
@@ -228,7 +235,9 @@ export const CollaborationContextProvider: React.FC<{
       if (isSelf(data?.userId)) {
         return;
       }
-      handlersRef.current.onScene?.(restoreElements(data?.shapes));
+      const incoming = restoreElements(data?.shapes);
+      const handlers = handlersRef.current;
+      (handlers.onInitialScene ?? handlers.onScene)?.(incoming);
     });
 
     socket.on("request-canvas-state", (data: { targetUserId?: string }) => {
@@ -333,7 +342,7 @@ export const CollaborationContextProvider: React.FC<{
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [isClient]);
+  }, [isClient, roomIdProp]);
 
   /* Drop cursors of people who stopped moving, so labels do not pile up. */
   useEffect(() => {
@@ -442,22 +451,30 @@ export const CollaborationContextProvider: React.FC<{
     [emit],
   );
 
-  const copyShareableLink = useCallback(() => {
-    if (!shareableLink) {
-      return;
+  /**
+   * Resolves with whether the link reached the clipboard, so the caller can say
+   * so. `navigator.clipboard` is absent over plain HTTP and can reject when the
+   * document is not focused, and a copy that silently did nothing is worse than
+   * one that admits it.
+   */
+  const copyShareableLink = useCallback(async (): Promise<boolean> => {
+    if (!shareableLink || !navigator.clipboard) {
+      return false;
     }
 
-    const done = () => {
-      setLinkCopied(true);
-      if (copyTimerRef.current !== null) {
-        window.clearTimeout(copyTimerRef.current);
-      }
-      copyTimerRef.current = window.setTimeout(() => setLinkCopied(false), 2000);
-    };
-
-    navigator.clipboard?.writeText(shareableLink).then(done, (error: unknown) => {
+    try {
+      await navigator.clipboard.writeText(shareableLink);
+    } catch (error) {
       console.warn("Could not copy the share link:", error);
-    });
+      return false;
+    }
+
+    setLinkCopied(true);
+    if (copyTimerRef.current !== null) {
+      window.clearTimeout(copyTimerRef.current);
+    }
+    copyTimerRef.current = window.setTimeout(() => setLinkCopied(false), 2000);
+    return true;
   }, [shareableLink]);
 
   const value = useMemo<CollaborationContextValue>(

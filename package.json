@@ -9,8 +9,10 @@
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "server": "node server/src/index.js",
-    "dev:all": "concurrently \"npm run dev\" \"npm run server\""
+    "server": "node --env-file-if-exists=.env server/src/index.js",
+    "dev:all": "concurrently \"npm run dev\" \"npm run server\"",
+    "db:migrate": "node --env-file-if-exists=.env scripts/migrate.mjs",
+    "db:check": "node --env-file-if-exists=.env scripts/db-check.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",
@@ -23,6 +25,7 @@
     "nanoid": "^3.3.11",
     "next": "15.2.8",
     "perfect-freehand": "^1.2.2",
+    "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-icons": "^5.5.0",
@@ -33,6 +36,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pg": "^8.11.10",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "concurrently": "^8.2.2",

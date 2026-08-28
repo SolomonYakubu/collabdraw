@@ -35,6 +35,16 @@
   --field-border: #d8d8e0;
   --divider: #ebebf0;
 
+  /* A sticky bar that lets the page show through behind it. */
+  --surface-blur: rgb(255 255 255 / 0.72);
+  /* The wash of colour behind the gallery, and a card's lifted shadow. */
+  --accent-glow: rgb(105 101 219 / 0.1);
+  --card-hover-shadow:
+    0 14px 30px rgb(0 0 0 / 0.1), 0 2px 8px rgb(0 0 0 / 0.06);
+
+  /* Behind a modal dialog. */
+  --overlay: rgb(0 0 0 / 0.32);
+
   /* The canvas is drawn light and inverted for dark mode; see below. */
   --canvas-filter: none;
 }
@@ -65,6 +75,13 @@
   --field-bg: #1e1e24;
   --field-border: #3d3d47;
   --divider: #31303b;
+
+  --surface-blur: rgb(18 18 18 / 0.72);
+  --accent-glow: rgb(168 165 255 / 0.1);
+  --card-hover-shadow:
+    0 14px 30px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.4);
+
+  --overlay: rgb(0 0 0 / 0.55);
 
   /*
    * Excalidraw's approach, and the reason dark mode needs no second render path:
@@ -190,6 +207,194 @@ canvas {
   background: var(--divider);
 }
 
+/**
+ * Text buttons — dialog footers, the gallery's actions.
+ *
+ * The icon buttons in the islands have `.island-button`; this is its sibling for
+ * anything with a word on it, so a "Delete" in a dialog and a "Delete" on a
+ * board card cannot drift apart.
+ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  border: 1px solid transparent;
+  color: var(--text);
+  background: transparent;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.btn:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn--secondary {
+  border-color: var(--field-border);
+}
+
+.btn--secondary:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.btn--danger {
+  background: var(--danger);
+  color: #ffffff;
+}
+
+.btn--danger:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+/* ------------------------------------------------------------------ *
+ * Board gallery
+ * ------------------------------------------------------------------ */
+
+/** The gallery's backdrop: the canvas surface with a wash of accent up top. */
+.gallery {
+  background-color: var(--canvas-bg);
+  background-image: radial-gradient(
+    120% 55% at 50% -8%,
+    var(--accent-glow),
+    transparent 70%
+  );
+}
+
+/** A bar that stays put while the page scrolls under it. */
+.sticky-bar {
+  background: var(--surface-blur);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--divider);
+}
+
+/** Squared paper: stands in for a preview that has not arrived, or never will. */
+.dot-grid {
+  background-image: radial-gradient(var(--divider) 1px, transparent 1px);
+  background-size: 14px 14px;
+  background-position: -1px -1px;
+}
+
+/**
+ * A board card. Lifts toward the pointer, and reacts to focus landing anywhere
+ * inside it so keyboard users get the same affordance.
+ */
+.board-card {
+  background: var(--island-bg);
+  border: 1px solid var(--island-border);
+  border-radius: 0.875rem;
+  box-shadow: var(--island-shadow);
+  transition:
+    transform 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 160ms ease,
+    border-color 160ms ease;
+}
+
+.board-card:hover,
+.board-card:focus-within {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  box-shadow: var(--card-hover-shadow);
+}
+
+/* The card's own ring, because the link filling it has no room for an outline. */
+.board-card:focus-within {
+  box-shadow: var(--card-hover-shadow), 0 0 0 2px var(--accent);
+}
+
+/**
+ * A control floating over a card preview. It needs its own surface to stay
+ * legible over whatever happens to be drawn underneath.
+ */
+.card-action {
+  background: var(--island-bg);
+  border: 1px solid var(--island-border);
+  box-shadow: var(--island-shadow);
+}
+
+.card-action:hover {
+  background: var(--hover-bg);
+}
+
+/* The preview grows a hair inside its frame — a hint that the card opens. */
+.board-card__preview {
+  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.board-card:hover .board-card__preview {
+  transform: scale(1.04);
+}
+
+/** A row in a popover menu. */
+.menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 0.375rem;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  color: var(--text);
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.menu-item:hover {
+  background: var(--hover-bg);
+}
+
+.menu-item--danger {
+  color: var(--danger);
+}
+
+.menu-item--danger:hover {
+  background: var(--danger-bg);
+}
+
+/** Placeholder surface while a preview is being fetched. */
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.skeleton {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--hover-bg) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
 /* Scrollbars that do not fight the dark theme. */
 .thin-scroll {
   scrollbar-width: thin;
@@ -233,6 +438,59 @@ canvas {
 
 .animate-slide-up {
   animation: slideUp 200ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Dialogs rise a little as they fade in; toasts drop from above. */
+@keyframes dialogIn {
+  from {
+    transform: translateY(8px) scale(0.98);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-dialog-in {
+  animation: dialogIn 140ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes toastIn {
+  from {
+    transform: translateY(-8px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-toast-in {
+  animation: toastIn 140ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-slide-up,
+  .animate-dialog-in,
+  .animate-toast-in {
+    animation-duration: 1ms;
+  }
+
+  .skeleton {
+    animation: none;
+  }
+
+  /* Keep the colour cues, drop the movement. */
+  .board-card,
+  .board-card__preview,
+  .board-card:hover,
+  .board-card:focus-within,
+  .board-card:hover .board-card__preview {
+    transform: none;
+    transition: border-color 120ms ease;
+  }
 }
 
 /* Touch active scale feedback */

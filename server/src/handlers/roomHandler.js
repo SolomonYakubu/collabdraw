@@ -1,5 +1,5 @@
 const roomStore = require('../state');
-const { loadCanvasState } = require('../roomState');
+const { loadCanvasState, loadBoardScene } = require('../roomState');
 const { clampTag, isValidRoomId } = require('../validation');
 
 /**
@@ -62,12 +62,19 @@ function registerRoomHandlers(io, socket) {
     io.to(roomId).emit('active-users', { users });
     console.log(`User ${safeTag} joined room ${roomId}`);
 
-    // If canvas state is already cached on the server, sync directly. Redis is
-    // the restart-safe fallback when this process has no local snapshot yet.
-    const persistedState = roomStore.hasCanvasState(roomId)
+    // Hydration fallback chain: local memory -> Redis hot cache -> Postgres
+    // store of record. First non-empty wins; seed the local cache so later
+    // joiners are served without another round-trip.
+    let persistedState = roomStore.hasCanvasState(roomId)
       ? roomStore.getCanvasState(roomId)
       : await loadCanvasState(roomId);
-    if (persistedState) {
+    if (!persistedState || persistedState.length === 0) {
+      const durable = await loadBoardScene(roomId);
+      if (durable && durable.length > 0) {
+        persistedState = durable;
+      }
+    }
+    if (persistedState && persistedState.length > 0) {
       roomStore.setCanvasState(roomId, persistedState);
       socket.emit('canvas-state-sync', {
         roomId,

@@ -9,6 +9,23 @@
  * three were tangled through 1,300 lines here and in `RoughCanvas`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { nanoid } from "nanoid";
+import {
+  FiCloud,
+  FiDownload,
+  FiEdit3,
+  FiFolder,
+  FiGrid,
+  FiImage,
+  FiLock,
+  FiMonitor,
+  FiMoon,
+  FiSun,
+  FiTrash2,
+  FiUnlock,
+  FiUsers,
+} from "react-icons/fi";
 
 import {
   DEFAULT_STYLE,
@@ -17,6 +34,7 @@ import {
   type Point,
   type Shape,
   type ToolType,
+  type Viewport,
 } from "../types/shapes";
 import { getElementBounds, mutateElement } from "../services/canvas/elements";
 import {
@@ -24,6 +42,19 @@ import {
   updateBoundElements,
 } from "../services/canvas/bindings";
 import { getSelectionBounds } from "../services/canvas/transform";
+import { decideInitialScene } from "../services/canvas/hydration";
+import {
+  clearLocalScene,
+  loadLocalScene,
+  saveLocalScene,
+} from "../services/canvas/localScene";
+import {
+  SCENE_FILE_EXTENSION,
+  SCENE_FILE_MIME,
+  parseSceneFile,
+  sceneFileName,
+  serializeScene,
+} from "../services/canvas/sceneFile";
 import {
   getElementAtPoint,
   HIT_THRESHOLD_PX,
@@ -38,7 +69,9 @@ import { useTextEditor } from "../hooks/canvas/useTextEditor";
 import { useKeyboardShortcuts } from "../hooks/canvas/useKeyboardShortcuts";
 import { useAIAssistant } from "../hooks/canvas/useAIAssistant";
 import { useCanvasCommands } from "../hooks/canvas/useCanvasCommands";
-import { useTheme } from "../hooks/useTheme";
+import { useBoardPersistence } from "../hooks/canvas/useBoardPersistence";
+import { useLocalSceneAutosave } from "../hooks/canvas/useLocalSceneAutosave";
+import { useTheme, type ThemePreference } from "../hooks/useTheme";
 import { useCollaborationContext } from "../context/CollaborationContext";
 
 import CanvasSurface from "./canvas/CanvasSurface";
@@ -47,16 +80,46 @@ import RemoteCursors from "./canvas/RemoteCursors";
 import Toolbar from "./canvas/ui/Toolbar";
 import StylePanel from "./canvas/ui/StylePanel";
 import ContextMenu, { type ContextMenuItem } from "./canvas/ui/ContextMenu";
+import MainMenu, { type MainMenuItem } from "./canvas/ui/MainMenu";
 import AIAgentPanel from "./canvas/AIAgentPanel";
 import ZoomControls from "./canvas/ui/ZoomControls";
 import MobileHeader from "./canvas/ui/MobileHeader";
 import MobileToolDock from "./canvas/ui/MobileToolDock";
 import MobileZoomControl from "./canvas/ui/MobileZoomControl";
+import ConfirmDialog from "./ui/ConfirmDialog";
+import PromptDialog from "./ui/PromptDialog";
+import ToastStack, { useToasts } from "./ui/Toast";
 
 interface CanvasProps {
   initialTool?: ToolType;
   isCollaborative?: boolean;
+  /**
+   * Present on `/board/[id]`: the scene is durable in Postgres and shared over
+   * the socket. Absent on `/`, where the scene is local to this browser.
+   */
+  boardId?: string;
+  initialTitle?: string;
+  initialElements?: Shape[];
+  initialViewport?: Viewport | null;
+  /**
+   * Set by `/board/[id]?adopt=local`: this room was just started from the local
+   * canvas, so the drawing that was on screen carries into it. Only used when
+   * the server has no scene of its own for the board.
+   */
+  adoptLocalScene?: boolean;
 }
+
+const THEME_HINTS: Record<ThemePreference, string> = {
+  light: "Light",
+  dark: "Dark",
+  system: "System",
+};
+
+const THEME_ICONS: Record<ThemePreference, React.ReactNode> = {
+  light: <FiSun size={15} />,
+  dark: <FiMoon size={15} />,
+  system: <FiMonitor size={15} />,
+};
 
 /** Tools whose elements can take a background fill. */
 const FILLABLE_TOOLS = new Set<ToolType>([
@@ -72,10 +135,56 @@ const LINEAR_TOOLS = new Set<ToolType>(["Line", "Arrow"]);
 const Canvas: React.FC<CanvasProps> = ({
   initialTool = "Select",
   isCollaborative = true,
+  boardId,
+  initialTitle,
+  initialElements,
+  initialViewport,
+  adoptLocalScene = false,
 }) => {
+  const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const interactiveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const spacePressedRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * No board and no room: the scene comes from this browser. It is read once,
+   * synchronously, in the initializer — Excalidraw's `initializeScene()` does
+   * the same, and reading it from an effect instead would paint an empty canvas
+   * for a frame before swapping the drawing in.
+   *
+   * A board reads it too when `adoptLocalScene` is set, which is the handover
+   * when you start a collaboration session from the local canvas.
+   */
+  const [restoredLocalScene] = useState(() =>
+    typeof window === "undefined" || (boardId && !adoptLocalScene)
+      ? null
+      : loadLocalScene(),
+  );
+
+  /* Anything the server already holds wins; the local scene only fills a gap. */
+  const seedElements =
+    initialElements && initialElements.length > 0
+      ? initialElements
+      : (restoredLocalScene?.elements ?? initialElements);
+  const seedViewport = initialViewport ?? restoredLocalScene?.viewport ?? null;
+
+  /*
+   * `?adopt=local` is a one-shot instruction. Drop it from the address bar so
+   * reloading the room does not re-inject a local scene the room has since
+   * moved past — and so the URL you copy is the plain share link.
+   */
+  useEffect(() => {
+    if (!adoptLocalScene) {
+      return;
+    }
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("adopt")) {
+      return;
+    }
+    url.searchParams.delete("adopt");
+    window.history.replaceState(null, "", url.toString());
+  }, [adoptLocalScene]);
 
   const [tool, setTool] = useState<ToolType>(initialTool);
   /*
@@ -86,11 +195,14 @@ const Canvas: React.FC<CanvasProps> = ({
   const [toolLocked, setToolLocked] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [style, setStyle] = useState<ElementStyle>(DEFAULT_STYLE);
-  const [showUsers, setShowUsers] = useState(false);
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isMobileStyleOpen, setIsMobileStyleOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<Point | null>(null);
+  const [title, setTitle] = useState(initialTitle ?? "Untitled board");
+  /** Which dialog is on screen, if any. `null` means the canvas is unblocked. */
+  const [dialog, setDialog] = useState<"rename" | "reset" | null>(null);
+  const { toasts, show: showToast, dismiss: dismissToast } = useToasts();
 
   const { preference: themePreference, theme, cycle: cycleTheme } = useTheme();
 
@@ -154,7 +266,10 @@ const Canvas: React.FC<CanvasProps> = ({
     [isCollaborative, sendDeletions, sendElements, sendScene],
   );
 
-  const scene = useScene({ onChange: handleSceneChange });
+  const scene = useScene({
+    initialElements: seedElements,
+    onChange: handleSceneChange,
+  });
   const {
     elements,
     elementsRef,
@@ -167,7 +282,7 @@ const Canvas: React.FC<CanvasProps> = ({
     resetHistory,
   } = scene;
 
-  const viewportApi = useViewport(containerRef);
+  const viewportApi = useViewport(containerRef, seedViewport);
   const {
     viewport,
     viewportRef,
@@ -179,6 +294,62 @@ const Canvas: React.FC<CanvasProps> = ({
     resetZoom,
     zoomToFit,
   } = viewportApi;
+
+  // Client-side persistence the socket server can't do: record the open,
+  // capture thumbnails, and flush the scene on unload while offline.
+  useBoardPersistence({
+    boardId,
+    elements,
+    elementsRef,
+    viewportRef,
+    isConnected,
+  });
+
+  /*
+   * The no-account tier. Disabled the moment there is a board, because then the
+   * server holds the authoritative scene and a second, staler copy in
+   * localStorage would only fight it — the same reason Excalidraw takes a
+   * `"collaboration"` save lock while you are in a room.
+   */
+  useLocalSceneAutosave({
+    enabled: !boardId,
+    elements,
+    elementsRef,
+    viewport,
+    viewportRef,
+  });
+
+  /**
+   * Renaming is a menu action rather than a field on the canvas: a board's name
+   * matters in the gallery, not while you are drawing. Best effort — if the
+   * PATCH fails the toast says so and the stored title is left alone.
+   */
+  const renameBoard = useCallback(
+    async (next: string) => {
+      setDialog(null);
+      if (!boardId || next === title) {
+        return;
+      }
+      setTitle(next);
+      try {
+        const response = await fetch(`/api/boards/${boardId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: next }),
+        });
+        if (!response.ok) {
+          throw new Error(`Rename failed (${response.status})`);
+        }
+        showToast("Board renamed", { kind: "success", id: "rename" });
+      } catch {
+        showToast("Renamed here, but the change was not saved.", {
+          kind: "error",
+          id: "rename",
+        });
+      }
+    },
+    [boardId, showToast, title],
+  );
 
   const {
     clipboardRef,
@@ -218,6 +389,17 @@ const Canvas: React.FC<CanvasProps> = ({
       // shape the user drew locally, which discarded the empty state and made
       // that first shape impossible to undo.
       onScene: (incoming) => resetHistory(removeStaleBindings(incoming)),
+      // Room hydration on join. If the server has no cached scene yet it sends
+      // an empty one; refuse that when we already loaded a scene from the DB,
+      // otherwise a freshly-opened board would be blanked. Push ours up instead.
+      onInitialScene: (incoming) => {
+        const restored = removeStaleBindings(incoming);
+        if (decideInitialScene(restored, elementsRef.current) === "push-local") {
+          sendScene(elementsRef.current);
+          return;
+        }
+        resetHistory(restored);
+      },
       onElements: (incoming) => {
         // Remote edits are authoritative for the elements they mention and are
         // never pushed back onto the wire, which is what caused the previous
@@ -253,6 +435,7 @@ const Canvas: React.FC<CanvasProps> = ({
     elementsRef,
     isCollaborative,
     resetHistory,
+    sendScene,
     setEventHandlers,
   ]);
 
@@ -611,6 +794,232 @@ const Canvas: React.FC<CanvasProps> = ({
   }, []);
 
   /* ------------------------------------------------------------------ *
+   * Document actions (the main menu)
+   * ------------------------------------------------------------------ */
+
+  /** Copy the room link, and say whether it landed. */
+  const copyLink = useCallback(async () => {
+    const copied = await copyShareableLink();
+    showToast(
+      copied
+        ? "Link copied"
+        : "Could not copy the link — copy it from the address bar.",
+      { kind: copied ? "success" : "error", id: "share-link" },
+    );
+  }, [copyShareableLink, showToast]);
+
+  /**
+   * Start a live session from whatever is on screen. No account, no saved
+   * board: a room id is minted here, the local scene is flushed so the room can
+   * adopt it, and the socket connects on `/board/<id>` — where the share link
+   * lives. This is Excalidraw's "Live collaboration": the room is created from
+   * your current drawing, and the drawing itself stays yours locally.
+   */
+  const startCollaboration = useCallback(() => {
+    saveLocalScene(elementsRef.current, viewportRef.current);
+    router.push(`/board/${nanoid(10)}?adopt=local`);
+  }, [elementsRef, router, viewportRef]);
+
+  /**
+   * Promote the local scene to a board in Postgres. One request creates the
+   * board *with* its scene, so there is nothing to hand over to the next page —
+   * `/board/<id>` reads it straight from the database.
+   */
+  const saveToCloud = useCallback(async () => {
+    showToast("Saving…", { id: "save-cloud", duration: 0 });
+    try {
+      const response = await fetch("/api/boards", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: title.trim() || undefined,
+          scene: elementsRef.current,
+          viewport: viewportRef.current,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(body?.error ?? `Save failed (${response.status})`);
+      }
+
+      const { id } = (await response.json()) as { id: string };
+      showToast("Saved to your boards", {
+        kind: "success",
+        id: "save-cloud",
+      });
+      router.push(`/board/${id}`);
+    } catch (error) {
+      showToast(
+        error instanceof Error
+          ? error.message
+          : "Could not save to your boards.",
+        { kind: "error", id: "save-cloud" },
+      );
+    }
+  }, [elementsRef, router, showToast, title, viewportRef]);
+
+  /** Download the scene as a `.collabdraw` document. */
+  const saveToFile = useCallback(() => {
+    const blob = new Blob(
+      [serializeScene(elementsRef.current, viewportRef.current)],
+      { type: SCENE_FILE_MIME },
+    );
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = sceneFileName();
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast("Scene saved to your downloads", {
+      kind: "success",
+      id: "save-file",
+    });
+  }, [elementsRef, showToast, viewportRef]);
+
+  const openFile = useCallback(() => fileInputRef.current?.click(), []);
+
+  const handleFilePicked = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      // Clear it first, so picking the same file twice in a row still fires.
+      event.target.value = "";
+      if (!file) {
+        return;
+      }
+
+      const parsed = parseSceneFile(await file.text());
+      if (!parsed) {
+        showToast(`That is not a ${SCENE_FILE_EXTENSION} scene.`, {
+          kind: "error",
+          id: "open-file",
+        });
+        return;
+      }
+
+      // An opened file replaces the scene, so it becomes the history baseline
+      // rather than an undoable edit — and peers need telling explicitly,
+      // because resetHistory does not broadcast.
+      setSelectedIds([]);
+      resetHistory(parsed.elements);
+      if (isCollaborative) {
+        sendScene(parsed.elements);
+      }
+      if (parsed.viewport) {
+        setViewport(parsed.viewport);
+      }
+      showToast(file.name, { kind: "success", id: "open-file" });
+    },
+    [isCollaborative, resetHistory, sendScene, setViewport, showToast],
+  );
+
+  const resetCanvas = useCallback(() => {
+    setDialog(null);
+    clearCanvas();
+    if (!boardId) {
+      clearLocalScene();
+    }
+    showToast("Canvas cleared", { kind: "success", id: "reset" });
+  }, [boardId, clearCanvas, showToast]);
+
+  const menuItems = useMemo<MainMenuItem[]>(
+    () => [
+      {
+        id: "open-file",
+        label: "Open…",
+        icon: <FiFolder size={15} />,
+        onSelect: openFile,
+      },
+      {
+        id: "save-file",
+        label: "Save to file",
+        icon: <FiDownload size={15} />,
+        onSelect: saveToFile,
+      },
+      {
+        id: "export-png",
+        label: "Export as image",
+        icon: <FiImage size={15} />,
+        onSelect: exportPNG,
+      },
+      // In a room the board is already saved, so the slot carries the one
+      // document action that is still useful there: its name.
+      boardId
+        ? {
+            id: "rename",
+            label: "Rename board…",
+            icon: <FiEdit3 size={15} />,
+            onSelect: () => setDialog("rename"),
+            hint: "Saved",
+            separatorBefore: true,
+          }
+        : {
+            id: "save-cloud",
+            label: "Save to my boards",
+            icon: <FiCloud size={15} />,
+            onSelect: () => void saveToCloud(),
+            separatorBefore: true,
+          },
+      {
+        id: "boards",
+        label: "My boards",
+        icon: <FiGrid size={15} />,
+        onSelect: () => router.push("/boards"),
+      },
+      {
+        id: "collaborate",
+        label: isCollaborative
+          ? "Copy collaboration link"
+          : "Live collaboration",
+        icon: <FiUsers size={15} />,
+        onSelect: isCollaborative ? () => void copyLink() : startCollaboration,
+        hint: isCollaborative && linkCopied ? "Copied" : undefined,
+        separatorBefore: true,
+      },
+      {
+        id: "theme",
+        label: "Theme",
+        icon: THEME_ICONS[themePreference],
+        onSelect: cycleTheme,
+        hint: THEME_HINTS[themePreference],
+        separatorBefore: true,
+      },
+      {
+        id: "tool-lock",
+        label: "Keep selected tool active",
+        icon: toolLocked ? <FiLock size={15} /> : <FiUnlock size={15} />,
+        onSelect: () => setToolLocked((locked) => !locked),
+        hint: toolLocked ? "On" : "Off",
+      },
+      {
+        id: "reset",
+        label: "Reset the canvas",
+        icon: <FiTrash2 size={15} />,
+        onSelect: () => setDialog("reset"),
+        danger: true,
+        separatorBefore: true,
+      },
+    ],
+    [
+      boardId,
+      copyLink,
+      cycleTheme,
+      exportPNG,
+      isCollaborative,
+      linkCopied,
+      openFile,
+      router,
+      saveToCloud,
+      saveToFile,
+      startCollaboration,
+      themePreference,
+      toolLocked,
+    ],
+  );
+
+  /* ------------------------------------------------------------------ *
    * Render
    * ------------------------------------------------------------------ */
 
@@ -688,15 +1097,25 @@ const Canvas: React.FC<CanvasProps> = ({
         )}
       </div>
 
+      {/* Open… — one hidden input shared by the desktop menu and the drawer. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={`${SCENE_FILE_EXTENSION},application/json`}
+        className="hidden"
+        onChange={(event) => void handleFilePicked(event)}
+      />
+
       {/* Mobile top navigation header */}
       <MobileHeader
         canUndo={canUndo}
         canRedo={canRedo}
         onUndo={undo}
         onRedo={redo}
-        onClear={clearCanvas}
-        onExport={exportPNG}
-        onShare={isCollaborative ? copyShareableLink : undefined}
+        onShare={isCollaborative ? () => void copyLink() : startCollaboration}
+        shareLabel={
+          isCollaborative ? undefined : "Start a live collaboration session"
+        }
         linkCopied={linkCopied}
         isCollaborative={isCollaborative}
         isConnected={isConnected}
@@ -706,16 +1125,56 @@ const Canvas: React.FC<CanvasProps> = ({
         isAIPanelOpen={isAIPanelOpen}
         isAiGenerating={ai.isGenerating}
         aiConversationCount={ai.history.length}
-        themePreference={themePreference}
-        onCycleTheme={cycleTheme}
-        toolLocked={toolLocked}
-        onToggleToolLock={() => setToolLocked((locked) => !locked)}
+        menuItems={menuItems}
         isMenuOpen={isMobileMenuOpen}
         onToggleMenu={() => setIsMobileMenuOpen((open) => !open)}
       />
 
-      {/* Desktop top-centre tool island */}
-      <div className="pointer-events-none absolute left-1/2 top-3 z-30 hidden -translate-x-1/2 md:flex">
+      {/* Desktop top-left: the main menu, and nothing else. Renaming a board is
+          a menu item, not a field parked on the canvas.
+
+          Layering rule for everything below: a wrapper with a z-index is a
+          stacking context, so a popover's own z-index only orders it against its
+          siblings — never against another wrapper. Islands that just sit there
+          (style panel, zoom) stay on z-30; the two that open something over them
+          are on z-40. At equal z-index the later element in the DOM wins, and the
+          style panel is rendered after this menu, which is exactly how the open
+          menu ended up underneath it. */}
+      <div className="pointer-events-none absolute left-3 top-3 z-40 hidden md:flex">
+        <MainMenu items={menuItems} />
+      </div>
+
+      {/* Outcome messages: saves, copies, an opened file, a failed rename. */}
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+
+      {/* Dialogs. Both replace a native prompt()/confirm(). */}
+      <PromptDialog
+        open={dialog === "rename"}
+        title="Board name"
+        description="Shown in your boards."
+        initialValue={title}
+        confirmLabel="Rename"
+        onConfirm={(next) => void renameBoard(next)}
+        onCancel={() => setDialog(null)}
+      />
+
+      <ConfirmDialog
+        open={dialog === "reset"}
+        title="Reset the canvas?"
+        description={
+          boardId
+            ? "Everything on this board is removed for everyone in the room. This cannot be undone."
+            : "Everything on the canvas is removed, here and from this browser's saved copy. This cannot be undone."
+        }
+        confirmLabel="Reset"
+        danger
+        onConfirm={resetCanvas}
+        onCancel={() => setDialog(null)}
+      />
+
+      {/* Desktop top-centre tool island. On z-40 for the same reason as the menu:
+          the collaborator list opens out of it. */}
+      <div className="pointer-events-none absolute left-1/2 top-3 z-40 hidden -translate-x-1/2 md:flex">
         <Toolbar
           tool={tool}
           onToolChange={handleToolChange}
@@ -725,20 +1184,17 @@ const Canvas: React.FC<CanvasProps> = ({
           canRedo={canRedo}
           onUndo={undo}
           onRedo={redo}
-          onClear={clearCanvas}
-          onExport={exportPNG}
-          onShare={isCollaborative ? copyShareableLink : undefined}
-          linkCopied={linkCopied}
-          onToggleUsers={
-            isCollaborative ? () => setShowUsers((s) => !s) : undefined
+          onShare={isCollaborative ? () => void copyLink() : startCollaboration}
+          shareLabel={
+            isCollaborative ? undefined : "Start a live collaboration session"
           }
-          userCount={users.length}
+          linkCopied={linkCopied}
+          users={isCollaborative ? users : undefined}
+          currentUserId={userId}
           onToggleAI={openAIPanel}
           isAIPanelOpen={isAIPanelOpen}
           isAiGenerating={ai.isGenerating}
           aiConversationCount={ai.history.length}
-          themePreference={themePreference}
-          onCycleTheme={cycleTheme}
         />
       </div>
 
@@ -850,35 +1306,8 @@ const Canvas: React.FC<CanvasProps> = ({
         />
       </div>
 
-      {isCollaborative && showUsers && users.length > 0 && (
-        <div className="island absolute bottom-14 left-3 z-30 hidden w-52 p-3 md:block">
-          <p
-            className="mb-2 text-[11px] font-medium"
-            style={{ color: "var(--text-muted)" }}
-          >
-            In this room ({users.length})
-          </p>
-          <ul className="space-y-1.5">
-            {users.map((user) => (
-              <li key={user.id} className="flex items-center gap-2 text-sm">
-                <span
-                  className="h-1.5 w-1.5 rounded-full"
-                  style={{ background: "var(--success)" }}
-                />
-                {user.tag}
-                {user.id === userId && (
-                  <span
-                    className="text-xs"
-                    style={{ color: "var(--text-faint)" }}
-                  >
-                    (you)
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* Who is in the room lives behind the toolbar's people button — see
+          `CollaboratorsButton`. No standing panel on the canvas. */}
 
       <AIAgentPanel
         isOpen={isAIPanelOpen}

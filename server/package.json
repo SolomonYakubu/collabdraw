@@ -4,9 +4,9 @@
   "description": "CollabDraw Realtime Collaboration WebSocket Server",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "worker": "node src/jobs/worker.js"
+    "start": "node --env-file-if-exists=../.env src/index.js",
+    "dev": "node --watch --env-file-if-exists=../.env src/index.js",
+    "worker": "node --env-file-if-exists=../.env src/jobs/worker.js"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
@@ -14,6 +14,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "ioredis": "^6.0.0",
+    "pg": "^8.13.1",
     "socket.io": "^4.8.1"
   }
 }

@@ -11,4 +11,5 @@ module.exports = {
   isProduction: process.env.NODE_ENV === "production",
   redisUrl: process.env.REDIS_URL || "",
   requireRedis: process.env.REQUIRE_REDIS === "true",
+  databaseUrl: process.env.DATABASE_URL || "",
 };

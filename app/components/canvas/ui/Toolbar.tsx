@@ -24,7 +24,6 @@ import {
   FiTrash2,
   FiType,
   FiUnlock,
-  FiUsers,
 } from "react-icons/fi";
 import { FaEraser } from "react-icons/fa";
 import { LuDiamond, LuTriangle } from "react-icons/lu";
@@ -35,6 +34,7 @@ import { RiSparkling2Line } from "react-icons/ri";
 import type { ToolType } from "../../../types/shapes";
 import { TOOL_SHORTCUTS } from "../../../hooks/canvas/useKeyboardShortcuts";
 import type { ThemePreference } from "../../../hooks/useTheme";
+import CollaboratorsButton from "./CollaboratorsButton";
 
 export interface ToolbarProps {
   tool: ToolType;
@@ -45,18 +45,30 @@ export interface ToolbarProps {
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
-  onClear: () => void;
-  onExport: () => void;
+  /**
+   * Document-level actions are optional: on the canvas they live in the
+   * top-left `MainMenu` (Excalidraw's split), and the tool island keeps to
+   * drawing, undo/redo and collaboration. Passing them still renders them,
+   * which is what the tests and any embedded use rely on.
+   */
+  onClear?: () => void;
+  onExport?: () => void;
   onShare?: () => void;
+  /** Overrides the share tooltip — on the local canvas it starts a session. */
+  shareLabel?: string;
   linkCopied?: boolean;
-  onToggleUsers?: () => void;
-  userCount?: number;
+  /**
+   * Present only in a room. The list itself hangs off the people button — the
+   * canvas carries no standing "who is here" panel.
+   */
+  users?: Array<{ id: string; tag: string }>;
+  currentUserId?: string | null;
   onToggleAI?: () => void;
   isAIPanelOpen?: boolean;
   isAiGenerating?: boolean;
   aiConversationCount?: number;
-  themePreference: ThemePreference;
-  onCycleTheme: () => void;
+  themePreference?: ThemePreference;
+  onCycleTheme?: () => void;
 }
 
 const TOOL_ICONS: Record<string, React.ReactNode> = {
@@ -136,9 +148,10 @@ const Toolbar: React.FC<ToolbarProps> = ({
   onClear,
   onExport,
   onShare,
+  shareLabel,
   linkCopied,
-  onToggleUsers,
-  userCount = 0,
+  users,
+  currentUserId,
   onToggleAI,
   isAIPanelOpen = false,
   isAiGenerating = false,
@@ -224,13 +237,17 @@ const Toolbar: React.FC<ToolbarProps> = ({
       </button>
     )}
 
-    <IconButton label="Export as PNG" onClick={onExport}>
-      <FiDownload size={15} />
-    </IconButton>
+    {onExport && (
+      <IconButton label="Export as PNG" onClick={onExport}>
+        <FiDownload size={15} />
+      </IconButton>
+    )}
 
     {onShare && (
       <IconButton
-        label={linkCopied ? "Link copied" : "Copy share link"}
+        label={
+          linkCopied ? "Link copied" : (shareLabel ?? "Copy share link")
+        }
         onClick={onShare}
         active={linkCopied}
       >
@@ -238,28 +255,23 @@ const Toolbar: React.FC<ToolbarProps> = ({
       </IconButton>
     )}
 
-    {onToggleUsers && (
-      <button
-        type="button"
-        title="Collaborators"
-        aria-label="Collaborators"
-        onClick={onToggleUsers}
-        className="island-button h-9 min-w-9 shrink-0 gap-1 px-2 text-[12px] font-medium"
-      >
-        <FiUsers size={15} />
-        {userCount > 0 && userCount}
-      </button>
+    {users && (
+      <CollaboratorsButton users={users} currentUserId={currentUserId} />
     )}
 
-    <Divider />
+    {(onCycleTheme || onClear) && <Divider />}
 
-    <IconButton label={THEME_LABELS[themePreference]} onClick={onCycleTheme}>
-      {THEME_ICONS[themePreference]}
-    </IconButton>
+    {onCycleTheme && themePreference && (
+      <IconButton label={THEME_LABELS[themePreference]} onClick={onCycleTheme}>
+        {THEME_ICONS[themePreference]}
+      </IconButton>
+    )}
 
-    <IconButton label="Reset the canvas" onClick={onClear} danger>
-      <FiTrash2 size={15} />
-    </IconButton>
+    {onClear && (
+      <IconButton label="Reset the canvas" onClick={onClear} danger>
+        <FiTrash2 size={15} />
+      </IconButton>
+    )}
   </div>
 );
 

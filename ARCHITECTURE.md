@@ -24,6 +24,7 @@ app/
 │   ├── transform.ts             Resizing a selection from a handle.
 │   ├── snapping.ts              Alignment guides and snap offsets.
 │   ├── textMeasure.ts           Text metrics and wrapping.
+│   ├── hydration.ts             Whether a join's scene may replace the local one.
 │   └── renderer.ts              Draws the scene onto the two canvases.
 ├── services/ai/
 │   ├── intent.ts                Which kind of drawing, and where it goes.
@@ -42,14 +43,32 @@ app/
 │   ├── useTextEditor.ts         Text editing state.
 │   ├── useKeyboardShortcuts.ts  Key bindings.
 │   └── useAIAssistant.ts        The AI diagram endpoint.
+├── hooks/canvas/useBoardPersistence.ts  Thumbnails, open-records, offline flush.
+├── hooks/canvas/useLocalSceneAutosave.ts  The no-account tier: localStorage.
+├── services/canvas/localScene.ts    Read/write the browser's copy of the scene.
+├── services/canvas/sceneFile.ts     The .collabdraw document format.
+├── lib/
+│   ├── db.ts                    Postgres pool and the board queries. Throws
+│   │                            DatabaseNotConfiguredError when there is no
+│   │                            DATABASE_URL, so the app runs without a
+│   │                            cloud tier instead of failing to connect.
+│   └── boardAccess.ts           Device cookie and payload size limits.
 ├── context/CollaborationContext.tsx   Socket transport only.
+├── page.tsx                     The canvas. The front door.
+├── board/[id]/                  A room: loads the board, mounts collaboration.
+├── boards/                      The gallery of cloud-saved boards.
 └── components/
     ├── Canvas.tsx               Wires the above together. Owns UI state.
+    ├── Dashboard.tsx            The gallery UI: cards, per-card menu, search.
+    ├── ui/                      Modal, ConfirmDialog, PromptDialog, Toast —
+    │                            the app's only ask-and-tell surfaces. Nothing
+    │                            calls window.confirm/prompt/alert.
     └── canvas/
         ├── CanvasSurface.tsx    The two <canvas> elements.
         ├── TextEditorOverlay.tsx  A real <textarea> over the element.
         ├── RemoteCursors.tsx    Collaborator cursors.
-        └── ui/                  Toolbar, StylePanel, ContextMenu, ZoomControls.
+        └── ui/                  MainMenu, Toolbar, CollaboratorsButton,
+                                 StylePanel, ContextMenu, ZoomControls.
 ```
 
 ## The three rules that keep it honest
@@ -62,7 +81,11 @@ production deployment should set `REDIS_URL` and `REQUIRE_REDIS=true`:
 ```
 browser -> Next.js app -> /api/generate-drawing
   |                         |
+  |                         +-> /api/boards/* ----+
+  |                                               |
   +-> Socket.IO x N --------+-> Redis (adapter + room snapshots)
+                  |         |
+                  |         +-> Postgres (Neon) — durable boards
                   |
                   +-> BullMQ -> dedicated AI workers
 ```
@@ -372,6 +395,85 @@ registers. It does not own the element list, so there is one source of truth.
   person's zoom.
 - `server/` (Socket.IO backend service, port 3001) relays messages and keeps
   the last known scene per room so a later joiner gets the drawing.
+
+## Persistence
+
+**The front door is the canvas, and it needs nothing.** `/` renders the editor
+with the last scene restored from `localStorage.collabdraw_scene` — no account,
+no board, no database. This is excalidraw.com's model, copied deliberately:
+`localScene.ts` owns the format (one versioned key holding elements plus
+viewport, read back through `restoreElements` so a corrupt entry degrades to an
+empty scene instead of throwing), and `useLocalSceneAutosave` owns the cadence —
+a 300 ms debounce (Excalidraw's `SAVE_TO_LOCAL_STORAGE_TIMEOUT`), skipped while
+the tab is hidden, flushed on `pagehide`, on hide, and on unmount.
+
+**Saving locally stops inside a room.** With a `boardId` present the autosave is
+disabled, because the socket server then holds the authoritative merged scene and
+a second, staler copy would only fight it. Excalidraw does this with a
+`"collaboration"` save lock, for the same reason. The consequence users feel is
+the important part: joining a room never overwrites the drawing you had at `/`.
+
+**Live collaboration is not a saved board.** The share button mints a room id in
+the browser, flushes the local scene, and navigates to `/board/<id>?adopt=local`;
+the room adopts that scene through the empty-sync rule below. No account and no
+database are involved — those are what "Save to my boards" adds.
+
+A board is one row in Postgres: `boards.scene` holds the `Shape[]` as `jsonb`,
+alongside queryable metadata (title, owner, counts, timestamps). The board id
+_is_ the room id, so persistence is metadata attached to a room rather than a
+second concept. Thumbnails and the "boards I have opened" relation live in their
+own tables — a 50-board gallery would otherwise drag megabytes of data URLs
+through every list query.
+
+**Three tiers, one direction.** In-memory room state is the fast path, Redis is
+a 24-hour hot cache, Postgres is the store of record. A join hydrates from the
+first of those that has something (`roomHandler`), and the client also renders
+its own database read from the `/board/[id]` server component, so a board is on
+screen before the socket has finished connecting.
+
+**One writer at a time.** The socket server holds the merged authoritative
+scene, so it does the writing: `scheduleFlush` coalesces edits and writes Redis
+and Postgres once they settle (3s), with a forced flush when a room empties and
+on `SIGINT`/`SIGTERM`. This replaced re-serialising the whole room to Redis on
+every stroke. The client writes the scene only when the socket is _disconnected_
+— a `sendBeacon` on `pagehide` — so the two writers do not race in practice; the
+server's next flush would correct it anyway. Title and thumbnail are separate
+columns written only by the client, so metadata never touches `scene`.
+
+**The empty-sync trap.** A board hydrated from the database joins a room whose
+server cache may be empty, and the server answers the join with an empty scene.
+Adopting it would blank the board. `services/canvas/hydration.ts` states the
+rule — refuse an empty hydration when the local scene is non-empty, and push the
+local scene up to seed the room instead — and it is unit-tested, because getting
+it wrong loses drawings intermittently rather than loudly. Live full updates (a
+peer's clear or undo) arrive on a different handler and are always applied. The
+same rule is what carries a local drawing into a freshly started session.
+
+**Degrading without a database.** `DATABASE_URL` is optional, and the pool is
+created on first use: with no connection string the board layer throws
+`DatabaseNotConfiguredError` instead of dialling `pg`'s default localhost, which
+failed as a message-less `AggregateError` and — replayed out of a Server
+Component — read as a crash. The pool binds a `pool.on("error")` listener because
+`pg` emits that on _idle_ clients and an unhandled `error` event takes the process
+down. Beyond that, every read path already logs and falls back (an empty scene, an
+empty gallery); the write path answers `503` with a message naming the limitation,
+rather than a silent failure that looks like a broken button.
+
+**Ownership** is an anonymous `cd_device` cookie issued by `middleware.ts`, and
+that cookie is the only writer of board ownership —
+`localStorage.collabdraw_userId` is the collaboration presence id and is
+deliberately kept separate. Middleware sets a new id on the *request* as well as
+the response, so the board created while rendering a first-ever share-link visit
+is stamped with the visitor's real id.
+
+Opening an unknown id creates the board (`insert ... on conflict do nothing`) so
+old share links and collaborators' links never 404. Only a caller with a real
+device id creates a row: the socket server's scene flush is an `update`, never an
+upsert, because that process has no cookie and its placeholder owner (`"server"`)
+produced boards nobody could rename or delete. Rows already stamped that way are
+treated as unclaimed — `mayWriteBoardMetadata` lets any real device write to one,
+and `claimBoard` takes ownership on the way through, guarded in SQL so a board
+that already has an owner can never be stolen.
 
 ## Tests
 

@@ -71,6 +71,14 @@ class RoomStore {
 
     const isEmpty = room.size === 0;
     if (isEmpty) {
+      // Forced durable flush before the in-memory scene is dropped, so the last
+      // edits survive the room going empty. Lazy require avoids a load-time
+      // cycle (roomState -> db -> ... does not import state).
+      const finalScene = this.roomCanvasStates.get(roomId);
+      if (Array.isArray(finalScene) && finalScene.length > 0) {
+        const { flushRoomNow } = require("./roomState");
+        void flushRoomNow(roomId, finalScene);
+      }
       this.activeRooms.delete(roomId);
       this.roomCanvasStates.delete(roomId);
     }
