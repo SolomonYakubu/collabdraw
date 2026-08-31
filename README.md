@@ -288,6 +288,10 @@ construction, hit testing, bindings, linear elements, the elbow router,
 transforms, snapping and the AI intent/layout/build pipeline — plus the renderer
 itself through node-canvas.
 
+Not yet covered: the socket server (`server/`), every React component, hook and
+context under `app/`, and the API routes — see [#14](https://github.com/SolomonYakubu/collabdraw/issues/14)
+and [#15](https://github.com/SolomonYakubu/collabdraw/issues/15).
+
 ## Contributing
 
 We welcome contributions! Here's how you can help:

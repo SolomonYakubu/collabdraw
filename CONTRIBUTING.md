@@ -41,5 +41,10 @@ If you encounter any issues, please open an issue in the repository with a detai
    ```bash
    npm run dev
    ```
+3. Before opening a pull request, run the test suite:
+   ```bash
+   npm test
+   ```
+   See [README.md](README.md#tests) for what it does and does not cover yet.
 
 Thank you for contributing!

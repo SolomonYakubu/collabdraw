@@ -503,3 +503,7 @@ transforms, snapping, the AI intent/layout/build pipeline (including grid
 detection and playing a turn on an existing board), and the renderer itself (via
 node-canvas, including a determinism check that the same scene renders
 byte-identically twice).
+
+Not covered: the socket server (`server/`), every React component, hook and
+context under `app/`, and the API routes — see [#14](https://github.com/SolomonYakubu/collabdraw/issues/14)
+and [#15](https://github.com/SolomonYakubu/collabdraw/issues/15).
