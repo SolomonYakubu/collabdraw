@@ -8,7 +8,14 @@
  * input in `usePointerInteraction`, drawing in the renderer — previously all
  * three were tangled through 1,300 lines here and in `RoughCanvas`.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import { nanoid } from "nanoid";
 import {
@@ -169,7 +176,16 @@ const Canvas: React.FC<CanvasProps> = ({
     initialElements && initialElements.length > 0
       ? initialElements
       : (restoredLocalScene?.elements ?? initialElements);
-  const seedViewport = initialViewport ?? restoredLocalScene?.viewport ?? null;
+
+  /*
+   * Only a viewport the *server* sent may seed the first render. The elements
+   * above are painted into a canvas, so restoring them early is invisible to
+   * hydration; the zoom is not — it is text in the zoom readout. Seeding it from
+   * localStorage rendered "66%" against the "100%" in the server's HTML, and
+   * React answered by throwing the hydrated tree away. The stored viewport is
+   * applied just below instead.
+   */
+  const seedViewport = initialViewport ?? null;
 
   /*
    * `?adopt=local` is a one-shot instruction. Drop it from the address bar so
@@ -298,6 +314,23 @@ const Canvas: React.FC<CanvasProps> = ({
     resetZoom,
     zoomToFit,
   } = viewportApi;
+
+  /*
+   * Restore the pan and zoom the local scene was saved with. A layout effect
+   * runs after hydration has matched the server's HTML but before the browser
+   * paints, so nothing is ever *drawn* at the wrong zoom — the point of seeding
+   * synchronously — while the render React hydrates stays the render it served.
+   */
+  useLayoutEffect(() => {
+    const stored = restoredLocalScene?.viewport;
+    if (initialViewport || !stored) {
+      return;
+    }
+    setViewport(stored);
+    // Mount only: re-running would drag the canvas back from wherever the
+    // person using it has since panned to.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Client-side persistence the socket server can't do: record the open,
   // capture thumbnails, and flush the scene on unload while offline.

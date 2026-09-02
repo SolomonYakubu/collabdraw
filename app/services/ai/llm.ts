@@ -5,7 +5,8 @@
  * the route; this file only knows how to ship a chat completion to *some* model
  * and hand the text back. Two transports cover effectively every provider:
  *
- *  - Gemini, via its SDK (structured-output schema enforced server-side).
+ *  - Gemini, via the `@google/genai` SDK (structured-output schema enforced
+ *    server-side).
  *  - Anything speaking the OpenAI-compatible `/chat/completions` contract,
  *    which is OpenAI, OpenRouter, Groq, Together, Mistral, DeepSeek, and
  *    self-hosted servers like Ollama and LM Studio.
@@ -14,13 +15,13 @@
  * so switching vendors is a .env change, not a code change.
  */
 import {
-  GoogleGenerativeAI,
+  GoogleGenAI,
   HarmBlockThreshold,
   HarmCategory,
-  SchemaType,
+  Type,
   type Part,
   type Schema,
-} from "@google/generative-ai";
+} from "@google/genai";
 
 /* ------------------------------------------------------------------ *
  * Configuration
@@ -137,13 +138,13 @@ export interface ModelOptions {
  * Both directions are mechanical, so neither transport needs its own copy.
  * ------------------------------------------------------------------ */
 
-const GEMINI_TYPES: Record<string, string> = {
-  string: SchemaType.STRING,
-  number: SchemaType.NUMBER,
-  integer: SchemaType.INTEGER,
-  boolean: SchemaType.BOOLEAN,
-  array: SchemaType.ARRAY,
-  object: SchemaType.OBJECT,
+const GEMINI_TYPES: Record<string, Type> = {
+  string: Type.STRING,
+  number: Type.NUMBER,
+  integer: Type.INTEGER,
+  boolean: Type.BOOLEAN,
+  array: Type.ARRAY,
+  object: Type.OBJECT,
 };
 
 const JSON_TYPES: Record<string, string> = {
@@ -157,32 +158,31 @@ const JSON_TYPES: Record<string, string> = {
 
 const toGeminiSchema = (node: unknown): Schema => {
   if (!node || typeof node !== "object") {
-    return { type: SchemaType.OBJECT, properties: {} };
+    return { type: Type.OBJECT, properties: {} };
   }
 
   const source = node as Record<string, unknown>;
-  const result: Record<string, unknown> = {
-    type:
-      GEMINI_TYPES[String(source.type).toLowerCase()] ?? SchemaType.OBJECT,
+  const result: Schema = {
+    type: GEMINI_TYPES[String(source.type).toLowerCase()] ?? Type.OBJECT,
   };
 
   if (typeof source.description === "string") {
     result.description = source.description;
   }
   if (Array.isArray(source.enum)) {
-    result.enum = source.enum;
+    result.enum = source.enum.map(String);
     result.format = "enum";
   } else if (typeof source.format === "string") {
     result.format = source.format;
   }
   if (Array.isArray(source.required)) {
-    result.required = source.required;
+    result.required = source.required.map(String);
   }
   if (source.items) {
     result.items = toGeminiSchema(source.items);
   }
   if (source.properties && typeof source.properties === "object") {
-    const properties: Record<string, unknown> = {};
+    const properties: Record<string, Schema> = {};
     for (const [key, value] of Object.entries(
       source.properties as Record<string, unknown>,
     )) {
@@ -191,7 +191,7 @@ const toGeminiSchema = (node: unknown): Schema => {
     result.properties = properties;
   }
 
-  return result as unknown as Schema;
+  return result;
 };
 
 const toJsonSchema = (node: unknown): Record<string, unknown> => {
@@ -243,18 +243,6 @@ const SAFETY_SETTINGS = [
   threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
 }));
 
-const geminiModel = (provider: ProviderConfig, options: ModelOptions) =>
-  new GoogleGenerativeAI(provider.apiKey).getGenerativeModel({
-    model: provider.model,
-    safetySettings: SAFETY_SETTINGS,
-    generationConfig: {
-      responseMimeType: "application/json",
-      responseSchema: toGeminiSchema(options.schema),
-      temperature: options.temperature ?? 0.2,
-      maxOutputTokens: options.maxOutputTokens ?? 8192,
-    },
-  });
-
 const geminiContent = (call: ModelCall): string | Part[] => {
   const text = [
     call.image
@@ -273,6 +261,29 @@ const geminiHistory = (history: readonly HistoryTurn[]) =>
     role: turn.role,
     parts: [{ text: turn.text }],
   }));
+
+/**
+ * A chat session carrying the whole call: the system instruction, the prior
+ * turns and the enforced reply schema. Both the one-shot and streaming paths
+ * send their message through one of these.
+ */
+const geminiChat = (
+  provider: ProviderConfig,
+  call: ModelCall,
+  options: ModelOptions,
+) =>
+  new GoogleGenAI({ apiKey: provider.apiKey }).chats.create({
+    model: provider.model,
+    history: geminiHistory(call.history),
+    config: {
+      systemInstruction: call.system,
+      safetySettings: SAFETY_SETTINGS,
+      responseMimeType: "application/json",
+      responseSchema: toGeminiSchema(options.schema),
+      temperature: options.temperature ?? 0.2,
+      maxOutputTokens: options.maxOutputTokens ?? 8192,
+    },
+  });
 
 /* ------------------------------------------------------------------ *
  * OpenAI-compatible transport (OpenAI, OpenRouter, Groq, Ollama, ...)
@@ -393,17 +404,16 @@ export const completeDrawing = async (
   options: ModelOptions,
 ): Promise<string> => {
   if (provider.id === "gemini") {
-    const model = geminiModel(provider, options);
-    const result = await model
-      .startChat({ history: geminiHistory(call.history) })
-      .sendMessage(geminiContent(call));
+    const response = await geminiChat(provider, call, options).sendMessage({
+      message: geminiContent(call),
+    });
 
-    const blocked = result.response.promptFeedback?.blockReason;
+    const blocked = response.promptFeedback?.blockReason;
     if (blocked) {
       throw new Error(`The request was blocked (${blocked}).`);
     }
 
-    return result.response.text();
+    return response.text ?? "";
   }
 
   const response = await postChatCompletions(provider, {
@@ -446,17 +456,16 @@ export const streamDrawing = async (
   options: ModelOptions,
 ): Promise<ReadableStream<Uint8Array>> => {
   if (provider.id === "gemini") {
-    const model = geminiModel(provider, options);
-    const streamResult = await model
-      .startChat({ history: geminiHistory(call.history) })
-      .sendMessageStream(geminiContent(call));
+    const chunks = await geminiChat(provider, call, options).sendMessageStream({
+      message: geminiContent(call),
+    });
 
     const encoder = new TextEncoder();
     return new ReadableStream<Uint8Array>({
       async start(controller) {
         try {
-          for await (const chunk of streamResult.stream) {
-            const piece = chunk.text();
+          for await (const chunk of chunks) {
+            const piece = chunk.text;
             if (piece) {
               controller.enqueue(encoder.encode(piece));
             }
