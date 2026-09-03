@@ -12,7 +12,6 @@
  * structure (typed components, connections, zones), and everything geometric —
  * tiers, bands, zone boxes, connectors — is computed deterministically.
  */
-import { ACCENT_COLORS, type NodeAccent } from "./graph";
 
 /** The component vocabulary a system design draws from. */
 export type SystemComponentType =
@@ -73,8 +72,14 @@ export interface SystemZone {
 }
 
 export interface SystemSpec {
-  /** Flow direction for the tier bands: top-to-bottom or left-to-right. */
-  direction: "down" | "right";
+  /**
+   * Flow direction for the tier bands: top-to-bottom or left-to-right.
+   *
+   * Absent when the reply did not ask for one, which is the usual case. The
+   * builder then picks whichever way round gives the better-shaped picture, so
+   * a wide design is not forced into a tall column — see `pickDirection`.
+   */
+  direction?: "down" | "right";
   nodes: SystemNode[];
   edges: SystemEdge[];
   zones: SystemZone[];
@@ -290,7 +295,12 @@ export const parseSystemSpec = (input: unknown): SystemSpec | null => {
   }
 
   return {
-    direction: raw.direction === "right" ? "right" : "down",
+    // Left undefined unless the reply actually stated one: "unstated" and
+    // "down" have to stay distinguishable, or every design is drawn downward.
+    direction:
+      raw.direction === "right" || raw.direction === "down"
+        ? raw.direction
+        : undefined,
     nodes,
     edges,
     zones,

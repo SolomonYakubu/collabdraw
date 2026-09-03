@@ -1,4 +1,4 @@
-import type { Point, Shape } from "../../../types/shapes";
+import type { Point, Shape, ToolType } from "../../../types/shapes";
 import { isLinearShape } from "../../../types/shapes";
 import {
   getElementBounds,
@@ -9,7 +9,6 @@ import {
   applyBindings,
   createBinding,
   getHoveredBindableElement,
-  MAX_BINDING_GAP_PX,
 } from "../../../services/canvas/bindings";
 import { refreshLinearElement } from "../../../services/canvas/linearElement";
 import { normalizeBox, simplifyPoints, snapAngle } from "../../../utils/geometry";
@@ -22,7 +21,7 @@ export interface DrawingContext {
   worldThreshold: (pixels: number) => number;
   setPending: (element: Shape | null) => void;
   setSelectedIds: (ids: string[]) => void;
-  setTool: (tool: any) => void;
+  setTool: (tool: ToolType) => void;
   toolLocked: boolean;
 }
 

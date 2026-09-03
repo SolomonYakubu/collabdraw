@@ -46,5 +46,11 @@ If you encounter any issues, please open an issue in the repository with a detai
    npm test
    ```
    See [README.md](README.md#tests) for what it does and does not cover yet.
+4. Lint your changes. The lint script treats warnings as failures, so it must be
+   clean before you open a pull request:
+   ```bash
+   npm run lint
+   ```
+   `npm run lint:fix` applies the fixes ESLint can make on its own.
 
 Thank you for contributing!

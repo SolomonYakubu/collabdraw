@@ -188,6 +188,7 @@ const CanvasSurface: React.FC<CanvasSurfaceProps> = ({
     elements,
     eraserTrail,
     erasingIds,
+    interactiveCanvasRef,
     isTransforming,
     marquee,
     pendingElement,

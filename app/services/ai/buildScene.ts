@@ -17,6 +17,7 @@ import {
 } from "../../types/shapes";
 import { createElement, mutateElement } from "../canvas/elements";
 import { applyBindings, createBinding } from "../canvas/bindings";
+import { pointsToFlat } from "../canvas/linearElement";
 import {
   fitLabelToContainer,
   getRequiredContainerSize,
@@ -28,6 +29,7 @@ import {
 } from "../canvas/textMeasure";
 import {
   ACCENT_COLORS,
+  CONNECTOR_COLORS,
   type DiagramGraph,
   type NodeAccent,
   type NodeShape,
@@ -35,10 +37,17 @@ import {
 import { layoutGraph, type LaidOutNode } from "./layout";
 import {
   layoutSystemGraph,
+  pickDirection,
+  SYSTEM_LAYOUT_DEFAULTS,
   type LaidOutSystemNode,
   type SystemLayout,
 } from "./systemLayout";
-import type { SystemSpec, SystemComponentType } from "./system";
+import { extraGapForLanes, planSystemRoutes } from "./systemRoutes";
+import type {
+  SystemSpec,
+  SystemComponentType,
+  SystemNode,
+} from "./system";
 
 const SHAPE_TOOLS: Record<NodeShape, "Square" | "Circle" | "Diamond"> = {
   rectangle: "Square",
@@ -420,6 +429,44 @@ const toGraphNode = (node: LaidOutSystemNode) => ({
 });
 
 /**
+ * Lay a design out one way round and plan its connectors.
+ *
+ * Two passes. The first only establishes which band each component sits in; the
+ * second reserves room in every channel for the lanes its connectors need. Bands
+ * do not depend on the gaps, so the second pass moves things along the flow axis
+ * and nothing else.
+ */
+const planInDirection = (
+  spec: SystemSpec,
+  direction: "down" | "right",
+  measureNode: (node: SystemNode) => { width: number; height: number },
+) => {
+  const oriented: SystemSpec = { ...spec, direction };
+
+  const draft = layoutSystemGraph(oriented, { measureNode });
+  const { laneCount } = planSystemRoutes(draft, spec.edges, direction);
+
+  const layout: SystemLayout = layoutSystemGraph(oriented, {
+    measureNode,
+    extraGapAfterBand: extraGapForLanes(
+      laneCount,
+      SYSTEM_LAYOUT_DEFAULTS.rowGap,
+    ),
+  });
+
+  return {
+    layout,
+    routes: planSystemRoutes(layout, spec.edges, direction).routes,
+  };
+};
+
+/** Whichever of two candidate plans makes the better-shaped picture. */
+const betterShaped = <T extends { layout: SystemLayout }>(
+  down: T,
+  right: T,
+): T => (pickDirection(down.layout, right.layout) === "right" ? right : down);
+
+/**
  * Build the elements for a system design: typed containers with bound labels,
  * bound elbow arrows between them, and zone group boxes drawn behind their
  * members. Zones are plain unfilled squares placed first in draw order, so they
@@ -429,13 +476,27 @@ export const buildSceneFromSystemGraph = (
   spec: SystemSpec,
   { origin, style = DEFAULT_STYLE, existing = [] }: BuildSceneOptions,
 ): BuiltScene => {
-  const layout: SystemLayout = layoutSystemGraph(spec, {
-    measureNode: (node) =>
-      measureNodeFor(style)({
-        label: node.label,
-        shape: SYSTEM_SHAPE[node.type],
-      }),
-  });
+  const measure = (node: SystemNode) =>
+    measureNodeFor(style)({
+      label: node.label,
+      shape: SYSTEM_SHAPE[node.type],
+    });
+
+  const plan = (direction: "down" | "right") =>
+    planInDirection(spec, direction, measure);
+
+  // Which way round to draw it. An explicit `direction` in the reply is an
+  // override and is taken as given; otherwise both ways are laid out in full and
+  // the better-shaped one wins. Laying both out is the only honest way to
+  // compare them — a wide tier wraps and a label decides how big its box is, so
+  // neither picture's proportions are knowable without doing the work.
+  const { layout, routes } = spec.direction
+    ? plan(spec.direction)
+    : betterShaped(plan("down"), plan("right"));
+
+  const waypointsFor = new Map(
+    routes.map((route) => [route.edge, route.waypoints]),
+  );
 
   const created: Shape[] = [];
 
@@ -528,6 +589,23 @@ export const buildSceneFromSystemGraph = (
   }
 
   /**
+   * A hue per component that sends something, taken in layout order so
+   * neighbours never share one. Every arrow leaving a box carries its colour,
+   * which is what lets a reader follow one line out of a bundle of eleven.
+   */
+  const connectorColor = new Map<string, string>();
+  const senders = new Set(spec.edges.map((edge) => edge.from));
+
+  for (const node of layout.nodes) {
+    if (senders.has(node.id)) {
+      connectorColor.set(
+        node.id,
+        CONNECTOR_COLORS[connectorColor.size % CONNECTOR_COLORS.length],
+      );
+    }
+  }
+
+  /**
    * Arrow plus the two endpoints it joins, resolved before any binding so an
    * unresolvable edge is skipped rather than mis-binding a later pair.
    */
@@ -538,7 +616,8 @@ export const buildSceneFromSystemGraph = (
     dashed: boolean;
   }> = [];
 
-  for (const edge of spec.edges) {
+  for (let index = 0; index < spec.edges.length; index += 1) {
+    const edge = spec.edges[index];
     const from = containerFor.get(edge.from);
     const to = containerFor.get(edge.to);
 
@@ -551,6 +630,7 @@ export const buildSceneFromSystemGraph = (
       y: from.y + from.height / 2,
     };
     const toCenter = { x: to.x + to.width / 2, y: to.y + to.height / 2 };
+    const stroke = connectorColor.get(edge.from) ?? DEFAULT_STYLE.stroke;
 
     const arrow = createElement(
       "Arrow",
@@ -562,15 +642,30 @@ export const buildSceneFromSystemGraph = (
         strokeStyle: edge.dashed ? "dashed" : "solid",
         edgeStyle: "elbow",
       },
-      DEFAULT_STYLE.stroke,
+      stroke,
       {
         ...style,
-        stroke: DEFAULT_STYLE.stroke,
+        stroke,
         strokeStyle: edge.dashed ? "dashed" : "solid",
       },
     )!;
 
-    created.push(arrow);
+    // Ports and lanes come from the plan; without them every connector out of a
+    // box would leave from the same anchor and take the same line across.
+    const waypoints = waypointsFor.get(index);
+
+    created.push(
+      waypoints
+        ? mutateElement(arrow, {
+            midPoints: pointsToFlat(
+              waypoints.map((point) => ({
+                x: origin.x + point.x,
+                y: origin.y + point.y,
+              })),
+            ),
+          })
+        : arrow,
+    );
     connectors.push({ arrowId: arrow.id, from, to, dashed: edge.dashed });
   }
 

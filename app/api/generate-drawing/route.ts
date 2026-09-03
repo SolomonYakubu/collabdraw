@@ -301,7 +301,7 @@ const RESPONSE_SCHEMA: Record<string, unknown> = {
           type: "string",
           enum: ["down", "right"],
           description:
-            "'down' (default) stacks tiers top to bottom — clients at the top, data stores at the bottom. 'right' flows left to right.",
+            "Optional, and best left out: the flow direction is chosen from the shape of the design, so a wide one is drawn left to right and a deep one top to bottom. Set it only to force one — 'down' stacks tiers top to bottom with clients at the top and data stores at the bottom, 'right' flows left to right.",
         },
         nodes: {
           type: "array",
@@ -515,6 +515,9 @@ describe what exists and how it connects.
   4. 'service' (tier 3 - backend business logic & microservices)
   5. 'queue', 'cache' (tier 4 - asynchronous messaging & in-memory caches)
   6. 'database', 'storage', 'external' (tier 5 - persistent storage & third parties)
+- Leave 'direction' out. Which way round those tiers run is computed from the
+  shape of the finished design: a wide one is drawn left to right, a deep one top
+  to bottom. Set it only when the request itself asks for one.
 - Name real technologies in labels where the design implies them: 'Redis' not
   'cache layer', 'Postgres' not 'database', 'Kafka' not 'queue'. Keep labels to one to three words.
 - Connect along the request path: client -> gateway -> service -> cache / queue -> database.
@@ -686,11 +689,6 @@ const parseInlineImage = (
 
   return SUPPORTED_IMAGE_TYPES.has(mimeType) ? { mimeType, data } : null;
 };
-
-interface HistoryTurn {
-  role: "user" | "model";
-  parts: Array<{ text: string }>;
-}
 
 /** Keep the transcript short; the canvas graph already carries the state. */
 const MAX_HISTORY_TURNS = 8;

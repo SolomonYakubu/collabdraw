@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { parseSystemSpec, MAX_SYSTEM_NODES } from "../system";
-import { layoutSystemGraph } from "../systemLayout";
+import { parseSystemSpec, MAX_SYSTEM_NODES, type SystemSpec } from "../system";
+import {
+  layoutSystemGraph,
+  pickDirection,
+  shapePenalty,
+} from "../systemLayout";
 import { buildSceneFromSystemGraph } from "../buildScene";
 import { parseDrawingIntent } from "../intent";
 import { inferComponentType } from "../describeScene";
 import { boxesOverlap } from "../../../utils/geometry";
 import { isLinearShape, type Shape, type TextShape } from "../../../types/shapes";
+import {
+  PLATFORM_EDGES,
+  PLATFORM_NODES,
+  PLATFORM_ZONES,
+} from "./fixtures/platform";
 
 const specOf = (
   nodes: Array<[string, string, string]>,
@@ -47,9 +56,24 @@ describe("parseSystemSpec", () => {
   it("fills in missing fields rather than failing", () => {
     const spec = parseSystemSpec({ nodes: [{ label: "API" }] })!;
     expect(spec.nodes[0]).toMatchObject({ id: "API", label: "API", type: "service" });
-    expect(spec.direction).toBe("down");
     expect(spec.edges).toEqual([]);
     expect(spec.zones).toEqual([]);
+  });
+
+  it("leaves the direction unstated unless the reply gave one", () => {
+    // "Unstated" and "down" have to stay distinguishable: the builder chooses a
+    // direction only when it was not asked for one.
+    expect(parseSystemSpec({ nodes: [{ label: "API" }] })!.direction).toBeUndefined();
+    expect(
+      parseSystemSpec({ direction: "sideways", nodes: [{ label: "API" }] })!
+        .direction,
+    ).toBeUndefined();
+
+    for (const direction of ["down", "right"] as const) {
+      expect(
+        parseSystemSpec({ direction, nodes: [{ label: "API" }] })!.direction,
+      ).toBe(direction);
+    }
   });
 
   it("tolerates invented component types by mapping or falling back", () => {
@@ -354,6 +378,46 @@ describe("buildSceneFromSystemGraph", () => {
     expect(elements.find(isLinearShape)!.strokeStyle).toBe("dashed");
   });
 
+  it("colours every connector by where it came from", () => {
+    const { elements } = build(
+      [
+        ["gw", "Gateway", "gateway"],
+        ["auth", "Auth", "service"],
+        ["feed", "Feed", "service"],
+        ["db", "Postgres", "database"],
+        ["cache", "Redis", "cache"],
+      ],
+      [
+        ["gw", "auth"],
+        ["gw", "feed"],
+        ["auth", "db"],
+        ["feed", "cache"],
+      ],
+    );
+
+    const strokesOf = new Map<string, Set<string>>();
+
+    for (const arrow of elements.filter(isLinearShape)) {
+      const source = arrow.startBinding!.elementId;
+      const seen = strokesOf.get(source) ?? new Set<string>();
+      seen.add(arrow.stroke);
+      strokesOf.set(source, seen);
+    }
+
+    // Three components send something, and each sends in one colour, so a
+    // bundle of arrows can be followed back to the box it left.
+    expect(strokesOf.size).toBe(3);
+    for (const strokes of strokesOf.values()) {
+      expect(strokes.size).toBe(1);
+    }
+
+    // No two of them picked the same colour.
+    const hues = new Set(
+      [...strokesOf.values()].map((strokes) => [...strokes][0]),
+    );
+    expect(hues.size).toBe(3);
+  });
+
   it("draws zone boxes behind their members", () => {
     const { elements } = build(
       [
@@ -408,6 +472,89 @@ describe("buildSceneFromSystemGraph", () => {
         container.x + container.width + 0.01,
       );
     }
+  });
+});
+
+describe("flow direction", () => {
+  const platform = (direction?: "down" | "right") =>
+    parseSystemSpec({
+      ...(direction ? { direction } : {}),
+      nodes: PLATFORM_NODES.map(([id, label, type]) => ({ id, label, type })),
+      edges: PLATFORM_EDGES.map(([from, to]) => ({
+        from,
+        to,
+        label: "",
+        dashed: false,
+      })),
+      zones: PLATFORM_ZONES,
+    })!;
+
+  const boundsOf = (spec: SystemSpec) =>
+    buildSceneFromSystemGraph(spec, { origin: { x: 0, y: 0 } }).bounds;
+
+  it("turns a design on its side only for a clear win", () => {
+    // A near-tie keeps the convention.
+    expect(
+      pickDirection({ width: 900, height: 500 }, { width: 860, height: 570 }),
+    ).toBe("down");
+
+    // So does a design that is badly shaped whichever way round it goes: a
+    // six-step chain is a column one way and a 1420px hairline the other.
+    expect(
+      pickDirection({ width: 120, height: 1038 }, { width: 1420, height: 57 }),
+    ).toBe("down");
+
+    // Two and a half screens deep against one screen wide is not a near-tie.
+    expect(
+      pickDirection({ width: 1479, height: 2205 }, { width: 2805, height: 960 }),
+    ).toBe("right");
+  });
+
+  it("draws a design that is naturally wide landscape", () => {
+    const auto = boundsOf(platform());
+    expect(auto.width).toBeGreaterThan(auto.height);
+  });
+
+  it("picks whichever of the two candidates is better shaped", () => {
+    const auto = boundsOf(platform());
+    const down = boundsOf(platform("down"));
+    const right = boundsOf(platform("right"));
+
+    // The picture drawn is one of the two laid out, not a third thing.
+    expect([down, right]).toContainEqual(auto);
+    expect(shapePenalty(auto)).toBeLessThanOrEqual(
+      Math.min(shapePenalty(down), shapePenalty(right)),
+    );
+  });
+
+  it("honours an explicit direction over the better-shaped one", () => {
+    // The same design comes out landscape when it is left to choose.
+    const forced = boundsOf(platform("down"));
+    expect(forced.height).toBeGreaterThan(forced.width);
+  });
+
+  it("keeps a design that is naturally deep top to bottom", () => {
+    const steps = [
+      ["c", "Browser", "client"],
+      ["cdn", "CDN", "cdn"],
+      ["lb", "Load Balancer", "load-balancer"],
+      ["api", "API", "service"],
+      ["redis", "Redis", "cache"],
+      ["db", "Postgres", "database"],
+    ];
+
+    const spec = parseSystemSpec({
+      nodes: steps.map(([id, label, type]) => ({ id, label, type })),
+      edges: steps.slice(1).map(([id], index) => ({
+        from: steps[index][0],
+        to: id,
+        label: "",
+        dashed: false,
+      })),
+    })!;
+
+    const bounds = boundsOf(spec);
+    expect(bounds.height).toBeGreaterThan(bounds.width);
   });
 });
 

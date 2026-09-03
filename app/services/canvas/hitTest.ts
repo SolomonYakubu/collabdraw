@@ -19,7 +19,6 @@ import {
   distanceToBoxOutline,
   distanceToEllipseOutline,
   distanceToPolyline,
-  distanceToSegment,
   isPointInBox,
   isPointInEllipse,
   isPointInPolygon,

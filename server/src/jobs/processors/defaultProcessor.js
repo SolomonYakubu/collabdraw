@@ -6,7 +6,7 @@
  */
 
 async function defaultProcessor(job) {
-  const { prompt, scene, mode, roomId, userId } = job.data || {};
+  const { prompt, mode, roomId, userId } = job.data || {};
 
   console.log(`[Job ${job.id}] Processing generation request: "${prompt?.slice(0, 50)}..."`);
   await job.updateProgress(10);

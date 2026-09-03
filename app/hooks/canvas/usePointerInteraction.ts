@@ -981,6 +981,7 @@ export const usePointerInteraction = ({
     },
     [
       applyPointSnap,
+      canvasRef,
       elementsRef,
       getWorldPoint,
       patchVisuals,

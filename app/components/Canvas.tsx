@@ -401,7 +401,6 @@ const Canvas: React.FC<CanvasProps> = ({
     reorderSelection,
     selectAll,
   } = useCanvasCommands({
-    elements,
     elementsRef,
     selectedIds,
     setSelectedIds,
@@ -793,6 +792,7 @@ const Canvas: React.FC<CanvasProps> = ({
       },
     ];
   }, [
+    clipboardRef,
     copySelection,
     deleteSelection,
     duplicateSelection,

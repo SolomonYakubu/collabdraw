@@ -68,6 +68,32 @@ export const ACCENT_COLORS: Record<NodeAccent, { fill: string; stroke: string }>
   purple: { fill: "#d0bfff", stroke: "#6741d9" },
 };
 
+/**
+ * Hues for connectors, handed out one per source component.
+ *
+ * A dense system diagram is dozens of same-coloured lines crossing each other,
+ * and the question a reader is asking at every crossing is which line is which.
+ * Giving every arrow that leaves one box a hue of its own answers it: a bundle
+ * can be followed back to where it came from without tracing corners.
+ *
+ * Hues are ~36 degrees apart and interleave warm with cool, so components placed
+ * next to each other get colours that are easy to tell apart. Weight matches the
+ * accent strokes above, so connectors sit alongside the boxes rather than shout
+ * over them, and each survives the hue-rotate the canvas applies in dark mode.
+ */
+export const CONNECTOR_COLORS: string[] = [
+  "#1971c2",
+  "#e8590c",
+  "#099268",
+  "#c2255c",
+  "#f08c00",
+  "#3b5bdb",
+  "#66a80f",
+  "#9c36b5",
+  "#0c8599",
+  "#e03131",
+];
+
 /** Caps that keep one request from producing an unusable wall of shapes. */
 export const MAX_NODES = 40;
 export const MAX_EDGES = 80;

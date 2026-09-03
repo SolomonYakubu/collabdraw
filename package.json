@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --fix",
     "test": "vitest run",
     "test:watch": "vitest",
     "server": "node --env-file-if-exists=.env server/src/index.js",
@@ -34,12 +35,17 @@
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.7",
+    "@eslint/js": "^9.39.5",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/pg": "^8.11.10",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "concurrently": "^8.2.2",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "15.2.8",
+    "globals": "^17.12.0",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^3.1.1"

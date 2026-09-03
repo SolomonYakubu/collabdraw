@@ -12,7 +12,6 @@ import {
   translateElement,
 } from "../../../services/canvas/elements";
 import {
-  applyBindings,
   createBinding,
   getHoveredBindableElement,
   MAX_BINDING_GAP_PX,

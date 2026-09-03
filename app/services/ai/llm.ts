@@ -548,7 +548,7 @@ export const streamDrawing = async (
             }
           }
         }
-      } catch (err) {
+      } catch {
         // Stream aborted or network broken
       } finally {
         controller.close();

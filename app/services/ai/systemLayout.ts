@@ -21,6 +21,13 @@ export interface LaidOutSystemNode extends SystemNode {
   width: number;
   height: number;
   tier: number;
+  /**
+   * Index of the row this node sits on, counted across the whole drawing rather
+   * than within its tier. A wide tier wraps onto several rows, so "which band
+   * am I in" and "which tier am I in" stop being the same question — and it is
+   * the band that decides which channel a connector has to cross.
+   */
+  band: number;
 }
 
 export interface LaidOutZone {
@@ -47,18 +54,80 @@ export interface SystemLayoutOptions {
   tierGap?: number;
   /** Gap between siblings within a tier, across the flow direction. */
   siblingGap?: number;
+  /** Gap between the wrapped rows of a single tier, along the flow direction. */
+  rowGap?: number;
+  /**
+   * How wide a tier may get across the flow before it wraps onto another row.
+   * A fourteen-service tier on one row is ~2900px: it needs a 3x zoom-out to
+   * fit, at which point the labels are unreadable, and every connector into it
+   * has to traverse the whole width, which is what piles routes into the same
+   * lane.
+   */
+  maxTierCross?: number;
   /** Padding added around a zone's members. */
   zonePadding?: number;
+  /**
+   * Extra room to add after band `band`, on top of the row or tier gap.
+   *
+   * Connectors are given a lane of their own in the channel between two bands
+   * (see `planSystemRoutes`), and a channel with eleven lanes needs more room
+   * than one with two. The caller lays out once to learn the bands, counts the
+   * lanes, then lays out again with this hook — band assignment does not depend
+   * on the gaps, so the second pass only moves things along the flow axis.
+   */
+  extraGapAfterBand?: (band: number) => number;
 }
 
 const DEFAULTS = {
   tierGap: 140,
   siblingGap: 72,
+  rowGap: 104,
+  maxTierCross: 1500,
   zonePadding: 32,
 };
 
+/** The gaps a layout uses when the caller does not override them. */
+export const SYSTEM_LAYOUT_DEFAULTS: Readonly<typeof DEFAULTS> = DEFAULTS;
+
 /** Tiers are capped at six bands (0-5); anything beyond clamps to the last. */
 const MAX_TIER = 5;
+
+/**
+ * Split one tier's ordered ids into rows that each fit within `budget`.
+ *
+ * Rows are balanced rather than greedily filled: fourteen services become
+ * 5/5/4, not 6/6/2. A greedy fill leaves a stub row whose nodes get centred
+ * under a wide row above, which reads as an accident rather than a grid.
+ */
+const splitIntoRows = (
+  ids: readonly string[],
+  crossSizeOf: (id: string) => number,
+  siblingGap: number,
+  budget: number,
+): string[][] => {
+  if (ids.length <= 1) {
+    return ids.length === 0 ? [] : [[...ids]];
+  }
+
+  const total = ids.reduce(
+    (sum, id, index) => sum + crossSizeOf(id) + (index > 0 ? siblingGap : 0),
+    0,
+  );
+
+  if (total <= budget) {
+    return [[...ids]];
+  }
+
+  const rowCount = Math.min(ids.length, Math.max(2, Math.ceil(total / budget)));
+  const perRow = Math.ceil(ids.length / rowCount);
+
+  const rows: string[][] = [];
+  for (let at = 0; at < ids.length; at += perRow) {
+    rows.push([...ids.slice(at, at + perRow)]);
+  }
+
+  return rows;
+};
 
 /**
  * Order each tier to reduce edge crossings and align dependent components
@@ -164,7 +233,10 @@ export const layoutSystemGraph = (
     measureNode,
     tierGap = DEFAULTS.tierGap,
     siblingGap = DEFAULTS.siblingGap,
+    rowGap = DEFAULTS.rowGap,
+    maxTierCross = DEFAULTS.maxTierCross,
     zonePadding = DEFAULTS.zonePadding,
+    extraGapAfterBand,
   } = options;
 
   const horizontal = spec.direction === "right";
@@ -195,68 +267,76 @@ export const layoutSystemGraph = (
 
   const nodeById = new Map(spec.nodes.map((node) => [node.id, node]));
 
-  // Extent of each tier along the flow axis, and total extent across it.
-  const tierExtent = byTier.map((ids) =>
-    ids.reduce(
-      (max, id) =>
-        Math.max(
-          max,
-          horizontal ? sized.get(id)!.width : sized.get(id)!.height,
-        ),
-      0,
-    ),
+  const flowSizeOf = (id: string) =>
+    horizontal ? sized.get(id)!.width : sized.get(id)!.height;
+  const crossSizeOf = (id: string) =>
+    horizontal ? sized.get(id)!.height : sized.get(id)!.width;
+
+  // A tier is a band of one or more rows: wide tiers wrap so the drawing stays
+  // roughly screen-shaped instead of growing sideways without limit.
+  const bands: Array<{ tier: number; ids: string[] }> = [];
+  byTier.forEach((ids, tierIndex) => {
+    for (const row of splitIntoRows(ids, crossSizeOf, siblingGap, maxTierCross)) {
+      bands.push({ tier: tierIndex, ids: row });
+    }
+  });
+
+  // Extent of each band along the flow axis, and total extent across it.
+  const bandFlow = bands.map(({ ids }) =>
+    ids.reduce((max, id) => Math.max(max, flowSizeOf(id)), 0),
   );
 
-  const crossExtent = byTier.map((ids) =>
+  const bandCross = bands.map(({ ids }) =>
     ids.reduce(
       (total, id, index) =>
-        total +
-        (horizontal ? sized.get(id)!.height : sized.get(id)!.width) +
-        (index > 0 ? siblingGap : 0),
+        total + crossSizeOf(id) + (index > 0 ? siblingGap : 0),
       0,
     ),
   );
 
-  const widestCross = Math.max(0, ...crossExtent);
+  const widestCross = Math.max(0, ...bandCross);
 
   const nodes: LaidOutSystemNode[] = [];
   let flowCursor = 0;
+  let trailingGap = 0;
 
-  byTier.forEach((ids, tierIndex) => {
-    // Centre each tier's stack across the flow, so bands read symmetrically.
-    let crossCursor = (widestCross - crossExtent[tierIndex]) / 2;
+  bands.forEach(({ tier, ids }, bandIndex) => {
+    // Centre each band's stack across the flow, so rows read symmetrically.
+    let crossCursor = (widestCross - bandCross[bandIndex]) / 2;
 
     for (const id of ids) {
       const node = nodeById.get(id)!;
       const size = sized.get(id)!;
 
-      const flowSize = horizontal ? size.width : size.height;
-      const crossSize = horizontal ? size.height : size.width;
-
-      // Centre the node within its tier's band.
-      const flowOffset = (tierExtent[tierIndex] - flowSize) / 2;
+      // Centre the node within its band.
+      const flowOffset = (bandFlow[bandIndex] - flowSizeOf(id)) / 2;
 
       nodes.push({
         ...node,
-        tier: tierIndex,
+        tier,
+        band: bandIndex,
         width: size.width,
         height: size.height,
         x: horizontal ? flowCursor + flowOffset : crossCursor,
         y: horizontal ? crossCursor : flowCursor + flowOffset,
       });
 
-      crossCursor += crossSize + siblingGap;
+      crossCursor += crossSizeOf(id) + siblingGap;
     }
 
-    flowCursor += tierExtent[tierIndex] + tierGap;
+    // Rows of the same tier sit closer together than two different tiers do.
+    const next = bands[bandIndex + 1];
+    trailingGap =
+      (next && next.tier === tier ? rowGap : tierGap) +
+      (extraGapAfterBand?.(bandIndex) ?? 0);
+    flowCursor += bandFlow[bandIndex] + trailingGap;
   });
 
-  const contentWidth = horizontal
-    ? Math.max(0, flowCursor - tierGap)
-    : widestCross;
-  const contentHeight = horizontal
-    ? widestCross
-    : Math.max(0, flowCursor - tierGap);
+  // The last band contributed a trailing gap that no band follows.
+  const contentFlow = Math.max(0, flowCursor - trailingGap);
+
+  const contentWidth = horizontal ? contentFlow : widestCross;
+  const contentHeight = horizontal ? widestCross : contentFlow;
 
   // Zones wrap their members' laid-out boxes plus padding.
   const placedById = new Map(nodes.map((node) => [node.id, node]));
@@ -306,3 +386,59 @@ export const layoutSystemGraph = (
 };
 
 export type { GraphNode };
+
+/* ------------------------------------------------------------------ *
+ * Which way round to draw it
+ * ------------------------------------------------------------------ */
+
+/**
+ * The shape a drawing should aim for. Screens are landscape, so a picture wider
+ * than it is tall can be read at a glance where a tall one has to be scrolled.
+ */
+const TARGET_ASPECT = 16 / 10;
+
+/**
+ * How far a laid-out picture is from that shape, in log space so that twice too
+ * wide scores the same as twice too tall. 0 is a perfect fit.
+ */
+export const shapePenalty = ({
+  width,
+  height,
+}: {
+  width: number;
+  height: number;
+}): number =>
+  Math.abs(
+    Math.log(Math.max(1, width) / Math.max(1, height) / TARGET_ASPECT),
+  );
+
+/**
+ * How much better shaped the alternative has to be before it is worth turning a
+ * design on its side. Top-to-bottom is the convention a reader expects from an
+ * architecture diagram — clients above, data stores below — so a marginal win in
+ * aspect ratio is not worth breaking it for.
+ *
+ * 0.2 in log space is "a fifth better fit". Measured against the 31-component
+ * social platform fixture, that is the line between the two cases: drawn downward
+ * it is 1479x2205, two and a half screens deep, against 2805x960 turned, and it
+ * turns; a fourteen-service fan-out, already a comfortable 1272x993 downward,
+ * stays as it is.
+ */
+const TURN_MARGIN = 0.2;
+
+/**
+ * Which direction to draw a design that did not ask for one: `down` unless
+ * `right` fits the screen appreciably better.
+ *
+ * A design's proportions come from its own shape, not from the request. Six
+ * tiers with two components each is naturally tall; six tiers where one holds
+ * fourteen services is naturally wide, and drawn downward it becomes a portrait
+ * picture several screens deep. Both candidates are laid out and measured rather
+ * than guessed at from node counts, because a wide tier wraps and a label
+ * decides how big its box is — neither is knowable without doing the work.
+ */
+export const pickDirection = (
+  down: { width: number; height: number },
+  right: { width: number; height: number },
+): "down" | "right" =>
+  shapePenalty(down) - shapePenalty(right) > TURN_MARGIN ? "right" : "down";

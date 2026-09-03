@@ -13,13 +13,11 @@ import {
 import {
   MAX_BINDING_GAP_PX,
   settleBindingsAfterMove,
-  updateBoundElements,
 } from "../../services/canvas/bindings";
 import { exportSceneToDataURL } from "../../services/canvas/renderer";
 import type { ElementsUpdater } from "./useScene";
 
 interface UseCanvasCommandsProps {
-  elements: Shape[];
   elementsRef: React.MutableRefObject<Shape[]>;
   selectedIds: string[];
   setSelectedIds: (ids: string[]) => void;
@@ -29,7 +27,6 @@ interface UseCanvasCommandsProps {
 }
 
 export const useCanvasCommands = ({
-  elements,
   elementsRef,
   selectedIds,
   setSelectedIds,
