@@ -9,32 +9,12 @@ import {
 import {
   getDeviceId,
   MAX_SCENE_BYTES,
+  readViewport,
   withinByteLimit,
 } from "../../lib/boardAccess";
 import { isAllowedRateLimit } from "../../lib/rateLimit";
 import { restoreElements } from "../../services/canvas/elements";
 import type { Shape, Viewport } from "../../types/shapes";
-
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value);
-
-/** Accept a viewport only if it is fully well-formed; otherwise store none. */
-function readViewport(value: unknown): Viewport | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const candidate = value as { zoom?: unknown; scroll?: unknown };
-  const scroll = candidate.scroll as { x?: unknown; y?: unknown } | undefined;
-  if (
-    !isFiniteNumber(candidate.zoom) ||
-    !scroll ||
-    !isFiniteNumber(scroll.x) ||
-    !isFiniteNumber(scroll.y)
-  ) {
-    return null;
-  }
-  return { zoom: candidate.zoom, scroll: { x: scroll.x, y: scroll.y } };
-}
 
 /**
  * POST /api/boards — create a board owned by the caller's device.

@@ -1,5 +1,7 @@
 import { cookies } from "next/headers";
 
+import type { Viewport } from "../types/shapes";
+
 /** Server-readable anonymous device id (set by middleware.ts). */
 export const DEVICE_COOKIE = "cd_device";
 
@@ -65,4 +67,34 @@ const BOARD_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function isValidBoardId(id: unknown): id is string {
   return typeof id === "string" && BOARD_ID_PATTERN.test(id);
+}
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+/**
+ * Accept a viewport only if it is fully well-formed; otherwise store none.
+ *
+ * Shared by both save paths — `POST /api/boards` and the beacon scene write —
+ * because a half-read viewport is worse than none: the board reopens scrolled
+ * into empty space with nothing on screen and no way to tell why. `Infinity` is
+ * the reason the check is `isFinite` rather than `typeof`: JSON has no literal
+ * for it, but `1e999` parses to it, and `JSON.stringify` then writes the column
+ * as `null` — a zoom that no client can restore.
+ */
+export function readViewport(value: unknown): Viewport | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const candidate = value as { zoom?: unknown; scroll?: unknown };
+  const scroll = candidate.scroll as { x?: unknown; y?: unknown } | undefined;
+  if (
+    !isFiniteNumber(candidate.zoom) ||
+    !scroll ||
+    !isFiniteNumber(scroll.x) ||
+    !isFiniteNumber(scroll.y)
+  ) {
+    return null;
+  }
+  return { zoom: candidate.zoom, scroll: { x: scroll.x, y: scroll.y } };
 }

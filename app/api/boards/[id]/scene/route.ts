@@ -10,10 +10,10 @@ import {
   MAX_SCENE_BYTES,
   getDeviceId,
   isValidBoardId,
+  readViewport,
   withinByteLimit,
 } from "../../../../lib/boardAccess";
 import { restoreElements } from "../../../../services/canvas/elements";
-import type { Viewport } from "../../../../types/shapes";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -54,7 +54,9 @@ export async function PUT(request: NextRequest, { params }: Params) {
 
     const payload = body as { scene?: unknown; viewport?: unknown };
     const scene = restoreElements(payload?.scene);
-    const viewport = isViewport(payload?.viewport) ? payload.viewport : null;
+    // Same validation as `POST /api/boards`: one reading of the viewport, so the
+    // two save paths cannot drift into storing different kinds of nonsense.
+    const viewport = readViewport(payload?.viewport);
 
     // Create-on-demand: a shared-link first save must not 404. Without a
     // device id there is no honest owner to record, so only the scene is saved
@@ -69,16 +71,4 @@ export async function PUT(request: NextRequest, { params }: Params) {
     console.error("PUT /api/boards/:id/scene failed:", error);
     return NextResponse.json({ error: "Could not save scene." }, { status: 500 });
   }
-}
-
-function isViewport(value: unknown): value is Viewport {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return (
-    typeof v.zoom === "number" &&
-    typeof v.scroll === "object" &&
-    v.scroll !== null &&
-    typeof (v.scroll as Record<string, unknown>).x === "number" &&
-    typeof (v.scroll as Record<string, unknown>).y === "number"
-  );
 }

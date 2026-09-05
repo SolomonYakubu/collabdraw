@@ -4,6 +4,7 @@ import {
   isUnclaimedOwner,
   isValidBoardId,
   mayWriteBoardMetadata,
+  readViewport,
   withinByteLimit,
 } from "../boardAccess";
 
@@ -76,5 +77,52 @@ describe("board metadata ownership", () => {
   it("refuses a caller with no device id, claimed or not", () => {
     expect(mayWriteBoardMetadata("server", "")).toBe(false);
     expect(mayWriteBoardMetadata("device-a", "")).toBe(false);
+  });
+});
+
+/**
+ * Shared by both save paths, and all-or-nothing on purpose: a board stored with
+ * half a viewport reopens scrolled into empty space, showing nothing, with no
+ * indication that the drawing is still there.
+ */
+describe("readViewport", () => {
+  it("keeps a complete viewport", () => {
+    expect(readViewport({ zoom: 1.5, scroll: { x: -20, y: 40 } })).toEqual({
+      zoom: 1.5,
+      scroll: { x: -20, y: 40 },
+    });
+  });
+
+  it("drops anything it cannot read in full", () => {
+    for (const value of [
+      undefined,
+      null,
+      "nope",
+      42,
+      {},
+      { zoom: 1 },
+      { scroll: { x: 0, y: 0 } },
+      { zoom: "1", scroll: { x: 0, y: 0 } },
+      { zoom: 1, scroll: null },
+      { zoom: 1, scroll: { x: 0 } },
+      { zoom: 1, scroll: { x: 0, y: "0" } },
+    ]) {
+      expect(readViewport(value)).toBeNull();
+    }
+  });
+
+  it("drops values that survive JSON but not arithmetic", () => {
+    // JSON has no literal for either, yet `1e999` parses to Infinity and both
+    // come back out of `JSON.stringify` as null — a zoom no client can restore.
+    expect(readViewport(JSON.parse('{"zoom":1e999,"scroll":{"x":0,"y":0}}'))).toBeNull();
+    expect(readViewport({ zoom: 1, scroll: { x: Number.NaN, y: 0 } })).toBeNull();
+  });
+
+  it("keeps only the fields it was asked for", () => {
+    // The result is written to a jsonb column and handed back to a client that
+    // spreads it into its own viewport state.
+    expect(
+      readViewport({ zoom: 1, scroll: { x: 0, y: 0, z: 9 }, evil: true }),
+    ).toEqual({ zoom: 1, scroll: { x: 0, y: 0 } });
   });
 });

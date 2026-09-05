@@ -29,7 +29,12 @@ const createDeviceId = (): string => {
 };
 
 export function middleware(request: NextRequest) {
-  if (request.cookies.get(DEVICE_COOKIE)) {
+  // The *value*, not just the cookie: `cd_device=` reads back as a cookie that
+  // exists, and because this one is deliberately not httpOnly, any script on the
+  // origin can leave it empty. Treating that as "already has an id" strands the
+  // device — `getDeviceId()` returns "" and every board write answers 400 with no
+  // way back — so an empty value is re-issued like a missing one.
+  if (request.cookies.get(DEVICE_COOKIE)?.value) {
     return NextResponse.next();
   }
 
