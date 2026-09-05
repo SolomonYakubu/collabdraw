@@ -17,6 +17,9 @@ const nextFiles = [
   "middleware.ts",
   "next.config.ts",
   "vitest.config.ts",
+  // `middleware.ts` lives at the root, so its suite does too; TypeScript there
+  // needs the same parser as the rest of the Next half.
+  "__tests__/**/*.{ts,tsx}",
 ];
 
 export default [
@@ -46,6 +49,18 @@ export default [
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "commonjs",
+      globals: globals.node,
+    },
+  },
+
+  // Its tests are the exception: Vitest loads everything under `__tests__` as
+  // ESM — the suites and the helpers they share — and they reach the CommonJS
+  // modules above through the interop default export or `createRequire`.
+  {
+    files: ["server/**/__tests__/**/*.{js,mjs}", "server/**/*.test.{js,mjs}"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
       globals: globals.node,
     },
   },

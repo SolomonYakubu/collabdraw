@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { createElement } from "../elements";
 import {
+  distanceToElementOutline,
   getElementAtPoint,
+  getElementsAtPoint,
   getElementsInBox,
+  getHandleCursor,
+  getHandleIndex,
   getTransformHandleAtPoint,
   getTransformHandles,
   hitTestElement,
   hitTestElementWithSegment,
+  isInsertHandle,
+  isWaypointHandle,
 } from "../hitTest";
-import type { Shape } from "../../../types/shapes";
+import type { Shape, TransformHandle } from "../../../types/shapes";
 
 const box = (extra: Record<string, unknown> = {}): Shape =>
   createElement("Square", { x: 0, y: 0, width: 200, height: 100, ...extra })!;
@@ -143,6 +149,60 @@ describe("hitTestElement", () => {
     expect(hitTestElement({ x: 100, y: 90 }, turned, 4)).toBe(true);
     expect(hitTestElement({ x: 10, y: 20 }, turned, 4)).toBe(false);
   });
+
+  it("hits a freehand stroke along the path it was drawn, not its box", () => {
+    const stroke = createElement("Freehand", {
+      points: [0, 0, 50, 100, 100, 0],
+    })!;
+
+    expect(hitTestElement({ x: 25, y: 50 }, stroke, 6)).toBe(true);
+    // The middle of the V is inside the bounding box but nowhere near the ink.
+    expect(hitTestElement({ x: 50, y: 10 }, stroke, 6)).toBe(false);
+  });
+
+  it("hits anywhere inside a filled ellipse", () => {
+    const filled = createElement("Circle", {
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 100,
+      fill: "#ffec99",
+    })!;
+
+    expect(hitTestElement({ x: 100, y: 50 }, filled, 6)).toBe(true);
+    // Its bounding corner is still outside the curve.
+    expect(hitTestElement({ x: 4, y: 4 }, filled, 6)).toBe(false);
+  });
+
+  it("hits inside a filled diamond but not in the corners it cuts off", () => {
+    const filled = createElement("Diamond", {
+      x: 0,
+      y: 0,
+      width: 200,
+      height: 200,
+      fill: "#ffec99",
+    })!;
+
+    expect(hitTestElement({ x: 100, y: 100 }, filled, 6)).toBe(true);
+    // A diamond only encloses half its box, so its bounding corners are empty.
+    expect(hitTestElement({ x: 10, y: 10 }, filled, 6)).toBe(false);
+  });
+
+  it("misses an element whose tool it does not recognise", () => {
+    /*
+     * A scene loaded from an older file or another build can carry a tool this
+     * version has no geometry for. Neither the outline nor the interior test
+     * knows what to do with it, and both must say "no hit" rather than throw —
+     * one unknown element would otherwise break every click on the canvas.
+     */
+    const alien = { ...box({ fill: "#ffec99" }), tool: "Hexagon" } as unknown as Shape;
+
+    expect(distanceToElementOutline({ x: 0, y: 0 }, alien)).toBe(
+      Number.POSITIVE_INFINITY,
+    );
+    expect(hitTestElement({ x: 100, y: 50 }, alien, 10)).toBe(false);
+    expect(hitTestElement({ x: 100, y: 50 }, alien, 10, true)).toBe(false);
+  });
 });
 
 describe("getElementAtPoint", () => {
@@ -171,6 +231,50 @@ describe("getElementAtPoint", () => {
   });
 });
 
+describe("getElementsAtPoint", () => {
+  it("returns every hit, topmost first", () => {
+    // The click-through cycle needs the whole stack under the cursor, not just
+    // the winner, so a repeated click can step down through overlapping shapes.
+    const lower = box({ fill: "#ffec99" });
+    const middle = createElement("Square", {
+      x: 80,
+      y: 30,
+      width: 40,
+      height: 40,
+      fill: "#a5d8ff",
+    })!;
+    const upper = box({ fill: "#b2f2bb" });
+
+    expect(
+      getElementsAtPoint({ x: 100, y: 50 }, [lower, middle, upper], 10),
+    ).toEqual([upper, middle, lower]);
+  });
+
+  it("leaves out the shapes the point only appears to be inside", () => {
+    // Same transparent-fill rule as a single hit: without includeInterior only
+    // the shape whose stroke is nearby comes back.
+    const hollow = box();
+    const filledBehind = createElement("Square", {
+      x: 80,
+      y: 30,
+      width: 40,
+      height: 40,
+      fill: "#ffec99",
+    })!;
+
+    expect(
+      getElementsAtPoint({ x: 100, y: 50 }, [filledBehind, hollow], 10),
+    ).toEqual([filledBehind]);
+    expect(
+      getElementsAtPoint({ x: 100, y: 50 }, [filledBehind, hollow], 10, true),
+    ).toEqual([hollow, filledBehind]);
+  });
+
+  it("returns an empty array when nothing is under the point", () => {
+    expect(getElementsAtPoint({ x: 900, y: 900 }, [box()], 10)).toEqual([]);
+  });
+});
+
 describe("getElementsInBox", () => {
   it("selects anything the marquee touches", () => {
     const a = box();
@@ -187,6 +291,15 @@ describe("getElementsInBox", () => {
     );
 
     expect(selected).toEqual([a]);
+  });
+
+  it("ignores deleted elements the marquee sweeps over", () => {
+    // Deleted elements stay in the array until history is pruned, so a marquee
+    // over empty canvas would otherwise select something invisible.
+    const gone = box({ isDeleted: true });
+    expect(
+      getElementsInBox({ x: -10, y: -10, width: 400, height: 400 }, [gone]),
+    ).toEqual([]);
   });
 });
 
@@ -306,6 +419,61 @@ describe("transform handles", () => {
     const atFour = getTransformHandles([box()], bounds, 4)[0];
     expect(atFour.width).toBeCloseTo(atOne.width / 4);
   });
+
+  it("keeps a mixed selection's handles upright and box-shaped", () => {
+    /*
+     * Two elements have no single angle to turn the frame by, so the handles
+     * stay axis-aligned — and a selection that happens to contain a line still
+     * gets the eight box handles rather than that line's endpoints.
+     */
+    const bounds = { x: 0, y: 0, width: 200, height: 100 };
+    const turned = createElement("Square", { ...bounds, angle: Math.PI / 4 })!;
+    const line = createElement("Line", { x1: 0, y1: 0, x2: 200, y2: 100 })!;
+
+    const handles = getTransformHandles([turned, line], bounds, 1);
+    const names = handles.map((handle) => handle.name);
+
+    expect(names).not.toContain("start");
+    expect(names).toContain("nw");
+    expect(handles.find((handle) => handle.name === "nw")!.center).toEqual({
+      x: 0,
+      y: 0,
+    });
+  });
+
+  it("returns a phantom handle when it is the only thing under the pointer", () => {
+    // Mid-segment is nowhere near either end, so the phantom is the only hit —
+    // the branch that lets a bend be pulled out of the middle of a line.
+    const line = createElement("Line", { x1: 0, y1: 0, x2: 200, y2: 200 })!;
+    expect(
+      getTransformHandleAtPoint({ x: 100, y: 100 }, [line], getBounds(line), 1),
+    ).toBe("add-0");
+  });
+
+  it("prefers a real handle to a phantom sharing the same spot", () => {
+    /*
+     * A line folded back on itself — both ends in the same place, a bend either
+     * side — puts the middle segment's phantom exactly on the endpoint handles.
+     * Dragging there must move the end rather than insert a fourth bend, which
+     * is why anything concrete wins the tie.
+     */
+    const folded = createElement("Line", {
+      x1: 0,
+      y1: 0,
+      x2: 0,
+      y2: 0,
+      midPoints: [0, 40, 0, -40],
+    })!;
+    const bounds = getBounds(folded);
+    const phantom = getTransformHandles([folded], bounds, 1).find(
+      (handle) => handle.name === "add-1",
+    )!;
+
+    expect(phantom.center).toEqual({ x: 0, y: 0 });
+    expect(getTransformHandleAtPoint(phantom.center, [folded], bounds, 1)).toBe(
+      "start",
+    );
+  });
 });
 
 describe("hitTestElementWithSegment", () => {
@@ -318,6 +486,86 @@ describe("hitTestElementWithSegment", () => {
     expect(hitTestElement(from, element, 8)).toBe(false);
     expect(hitTestElement(to, element, 8)).toBe(false);
     expect(hitTestElementWithSegment(from, to, element, 8)).toBe(true);
+  });
+
+  it("reports a miss for a stroke that never comes near the element", () => {
+    expect(
+      hitTestElementWithSegment(
+        { x: 400, y: 400 },
+        { x: 600, y: 600 },
+        box(),
+        8,
+      ),
+    ).toBe(false);
+  });
+
+  it("still samples a stationary pointer", () => {
+    // A press with no movement is a zero-length segment; `steps` must not come
+    // out as 0 and skip the loop, or a click-to-erase would do nothing.
+    const element = box();
+    expect(
+      hitTestElementWithSegment({ x: 100, y: 0 }, { x: 100, y: 0 }, element, 8),
+    ).toBe(true);
+  });
+
+  it("never erases an already-deleted element", () => {
+    expect(
+      hitTestElementWithSegment(
+        { x: 100, y: -40 },
+        { x: 100, y: 40 },
+        box({ isDeleted: true }),
+        8,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("handle helpers", () => {
+  it("tells the three kinds of linear handle apart", () => {
+    expect(isWaypointHandle("mid-2")).toBe(true);
+    expect(isWaypointHandle("add-2")).toBe(false);
+    expect(isWaypointHandle("nw")).toBe(false);
+
+    expect(isInsertHandle("add-0")).toBe(true);
+    expect(isInsertHandle("mid-0")).toBe(false);
+    expect(isInsertHandle("rotate")).toBe(false);
+  });
+
+  it("reads the index off a numbered handle", () => {
+    expect(getHandleIndex("mid-0")).toBe(0);
+    expect(getHandleIndex("add-3")).toBe(3);
+    expect(getHandleIndex("mid-12")).toBe(12);
+  });
+
+  it("returns -1 for a handle that carries no index", () => {
+    // The drag code indexes `midPoints` with this, so a NaN would splice at an
+    // unpredictable position instead of being rejected.
+    expect(getHandleIndex("nw")).toBe(-1);
+    expect(getHandleIndex("rotate")).toBe(-1);
+  });
+
+  it("gives every handle the cursor that describes what it will do", () => {
+    const cursors: Array<[TransformHandle, string]> = [
+      ["nw", "nwse-resize"],
+      ["se", "nwse-resize"],
+      ["ne", "nesw-resize"],
+      ["sw", "nesw-resize"],
+      ["n", "ns-resize"],
+      ["s", "ns-resize"],
+      ["e", "ew-resize"],
+      ["w", "ew-resize"],
+      ["rotate", "grab"],
+      ["start", "move"],
+      ["end", "move"],
+      ["mid-0", "move"],
+      // A phantom handle creates a bend rather than moving one, so it reads as
+      // a copy the way Excalidraw's does.
+      ["add-1", "copy"],
+    ];
+
+    for (const [handle, cursor] of cursors) {
+      expect(getHandleCursor(handle)).toBe(cursor);
+    }
   });
 });
 

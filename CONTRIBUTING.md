@@ -52,5 +52,16 @@ If you encounter any issues, please open an issue in the repository with a detai
    npm run lint
    ```
    `npm run lint:fix` applies the fixes ESLint can make on its own.
+5. Check the types and the production build, which catch what the tests and the
+   linter do not:
+   ```bash
+   npm run typecheck
+   npm run build
+   ```
+
+CI runs those same four commands on every pull request, so running them first
+only saves you a round trip. It also applies `migrations/` to a throwaway
+Postgres, which is worth knowing if your change touches the schema. No secrets
+are involved, so the checks report normally on a pull request from a fork.
 
 Thank you for contributing!

@@ -1,0 +1,132 @@
+# The checks that have to pass before anything merges.
+#
+# Until this file existed nothing ran them: 600 tests, a typecheck, a lint and a
+# build that only happened when somebody remembered, so a regression surfaced
+# whenever the next person happened to look. The workflow needs no secrets —
+# every variable the app reads has a fallback, and the database job brings its
+# own throwaway Postgres — so it runs the same way on a fork's pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push makes the first run's answer worthless; stop paying for it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# This workflow reports. It does not write anything back.
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          # 20.12 is the real floor — the npm scripts use
+          # `--env-file-if-exists`, which landed there — but 22 is the LTS the
+          # app is deployed on.
+          node-version: 22
+          cache: npm
+          # The socket server keeps its own lockfile for its own deploy.
+          cache-dependency-path: |
+            package-lock.json
+            server/package-lock.json
+
+      - run: npm ci
+
+      # `!cancelled()` instead of stopping at the first failure: four verdicts
+      # from one push beats discovering the next one after each fix. Ordered
+      # cheapest first, so the fastest answer arrives first.
+      - name: Typecheck
+        if: ${{ !cancelled() }}
+        run: npm run typecheck
+
+      - name: Tests
+        if: ${{ !cancelled() }}
+        run: npm test
+
+      # Warnings are failures here, exactly as in `npm run lint` locally.
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: npm run lint
+
+      # Deliberately no `env:`. Every variable the app reads has a fallback, so
+      # a build with none proves the build, and a missing key cannot quietly
+      # become a build-time dependency.
+      - name: Build
+        if: ${{ !cancelled() }}
+        run: npm run build
+
+      # The socket server deploys on its own from `server/`, so its lockfile has
+      # to be installable there. Nothing else exercises it — the tests under
+      # `server/src/__tests__` run off the root install, which carries every
+      # server dependency — which is how that lockfile came to be missing `pg`.
+      - name: Install the socket server's own lockfile
+        if: ${{ !cancelled() }}
+        working-directory: server
+        run: npm ci
+
+  database:
+    name: Migrations
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # The store of record is Neon, which runs Postgres 17.
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: collabdraw
+        ports: ["5432:5432"]
+        # Without a healthcheck the first migration races the server's startup.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Throwaway credentials for a container that lives as long as this job.
+      # `sslmode=disable` is explicit because both scripts read it; localhost
+      # has no certificate to verify anyway. No `DATABASE_URL_UNPOOLED`: there
+      # is no pooler here, and the migration runner falls back to this one.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/collabdraw?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+
+      # `migrations/*.sql` has never run anywhere but a developer's own Neon
+      # branch. This is the first thing that applies it from scratch.
+      - name: Apply the migrations
+        run: npm run db:migrate
+
+      # And the same preflight a developer runs: the tables the app queries are
+      # the tables the migrations create.
+      - name: Check the schema the app expects
+        run: npm run db:check
+
+      # Applying twice has to be a no-op, or every redeploy is a coin flip.
+      # `create table if not exists` would swallow a re-run silently, so this
+      # asserts the runner skipped the file rather than re-applying it.
+      - name: Re-apply, expecting nothing to happen
+        # `shell: bash` for the pipefail it brings: without it `tee` would
+        # answer for a failed migration.
+        shell: bash
+        run: |
+          npm run db:migrate | tee second-run.log
+          grep -q "no pending migrations" second-run.log

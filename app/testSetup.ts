@@ -4,6 +4,10 @@
  * node-canvas gives us a real 2D context, but not `Path2D` or a DOM, both of
  * which the renderer uses. These stand-ins are only good enough to let the
  * rendering code run and produce pixels.
+ *
+ * Every shim is conditional, because this setup also runs for files that opt
+ * into jsdom (`// @vitest-environment jsdom`). There a real `document` already
+ * exists and must not be replaced by the one-method stub below.
  */
 import { CanvasRenderingContext2D, createCanvas } from "canvas";
 
@@ -44,12 +48,16 @@ class Path2DShim {
 
 const globals = globalThis as unknown as Record<string, unknown>;
 
-globals.Path2D = Path2DShim;
+if (!globals.Path2D) {
+  globals.Path2D = Path2DShim;
+}
 
-globals.document = {
-  createElement: (tag: string) =>
-    tag === "canvas" ? createCanvas(1, 1) : ({} as unknown),
-};
+if (!globals.document) {
+  globals.document = {
+    createElement: (tag: string) =>
+      tag === "canvas" ? createCanvas(1, 1) : ({} as unknown),
+  };
+}
 
 // Teach `fill(path)` to accept the shim.
 const originalFill = CanvasRenderingContext2D.prototype.fill;
