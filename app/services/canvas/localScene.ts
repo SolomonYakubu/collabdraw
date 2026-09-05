@@ -29,11 +29,16 @@ export const LOCAL_SCENE_VERSION = 1;
 export interface LocalScene {
   elements: Shape[];
   viewport: Viewport | null;
-  /** When the entry was written, or null when there was nothing to read. */
-  savedAt: number | null;
 }
 
-const EMPTY: LocalScene = { elements: [], viewport: null, savedAt: null };
+/*
+ * No timestamp. One used to be written for a "restored from your last session"
+ * notice that was never built, and this tier exists precisely so that opening
+ * the app is not an event — there is nothing to announce, so nothing to date.
+ * Add it back beside the version if a reader ever appears: an entry carrying a
+ * field the reader ignores still loads, so both builds can read both entries.
+ */
+const EMPTY: LocalScene = { elements: [], viewport: null };
 
 const isViewport = (value: unknown): value is Viewport => {
   if (typeof value !== "object" || value === null) {
@@ -79,7 +84,6 @@ export function loadLocalScene(): LocalScene {
       version?: unknown;
       elements?: unknown;
       viewport?: unknown;
-      savedAt?: unknown;
     };
 
     if (parsed?.version !== LOCAL_SCENE_VERSION) {
@@ -89,7 +93,6 @@ export function loadLocalScene(): LocalScene {
     return {
       elements: restoreElements(parsed.elements),
       viewport: isViewport(parsed.viewport) ? parsed.viewport : null,
-      savedAt: typeof parsed.savedAt === "number" ? parsed.savedAt : null,
     };
   } catch {
     return EMPTY;
@@ -115,7 +118,6 @@ export function saveLocalScene(
         version: LOCAL_SCENE_VERSION,
         elements,
         viewport,
-        savedAt: Date.now(),
       }),
     );
     return true;
@@ -124,7 +126,12 @@ export function saveLocalScene(
   }
 }
 
-/** Forget the local scene (used by "Reset canvas"). */
+/**
+ * Forget the local scene ("Reset the canvas"). Removing the entry is only half
+ * of it: emptying the canvas is itself a change, so the autosave would write a
+ * fresh entry one debounce later. Callers go through
+ * `useLocalSceneAutosave`'s `clearSavedScene`, which does both halves.
+ */
 export function clearLocalScene(): void {
   if (typeof window === "undefined") {
     return;

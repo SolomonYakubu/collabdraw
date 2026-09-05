@@ -119,7 +119,11 @@ const Modal: React.FC<ModalProps> = ({
 
         {children && <div className="mt-3">{children}</div>}
 
-        <div className="mt-4 flex items-center justify-end gap-2">{footer}</div>
+        {/* Wraps because a question with two ways to say yes needs three buttons,
+            and three labels do not fit `max-w-sm` on a narrow phone. */}
+        <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+          {footer}
+        </div>
       </div>
     </div>,
     document.body,

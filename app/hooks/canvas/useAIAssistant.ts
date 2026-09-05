@@ -83,10 +83,10 @@ const SNAPSHOT_JPEG_QUALITY = 0.7;
  * merely paused between strokes. A second is mid-drawing; three seconds of no
  * element changes reads as done.
  */
-const AUTO_RESPOND_DELAY_MS = 3000;
+export const AUTO_RESPOND_DELAY_MS = 3000;
 
 /** Grace period after the assistant writes, so its own edits never retrigger. */
-const AI_WRITE_SETTLE_MS = 400;
+export const AI_WRITE_SETTLE_MS = 400;
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -114,7 +114,12 @@ const readHistory = (key: string): AIChatEntry[] => {
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter(isChatEntry) : [];
   } catch {
-    window.localStorage.removeItem(key);
+    try {
+      window.localStorage.removeItem(key);
+    } catch {
+      // Storage that throws on read throws on remove too (Safari's private
+      // mode): there is nothing to clean up, and this runs during mount.
+    }
     return [];
   }
 };
@@ -165,12 +170,6 @@ export interface AIAssistant {
   /** When on, the assistant takes its turn as soon as the canvas settles. */
   autoRespond: boolean;
   setAutoRespond: (autoRespond: boolean) => void;
-  /**
-   * When on, requests bias towards the system design kind — typed components,
-   * tiered layout. A hint only; the model still decides.
-   */
-  architectureMode: boolean;
-  setArchitectureMode: (architectureMode: boolean) => void;
   /** Called when the *user* changed the canvas, to schedule an automatic turn. */
   notifyUserEdit: () => void;
 }
@@ -188,12 +187,13 @@ export const useAIAssistant = ({
   const [history, setHistory] = useState<AIChatEntry[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [autoRespond, setAutoRespond] = useState(true);
-  const [architectureMode, setArchitectureMode] = useState(false);
-
-  /** Read inside `generate` without making it depend on the toggle. */
-  const architectureModeRef = useRef(architectureMode);
-  architectureModeRef.current = architectureMode;
+  /**
+   * Off until asked for. An automatic turn is a request nobody typed — it spends
+   * the deployment's API quota and can redraw the canvas while you are still
+   * looking at it, so it is opt-in per session rather than something to discover
+   * happening.
+   */
+  const [autoRespond, setAutoRespond] = useState(false);
 
   const storageKey = useMemo(() => storageKeyFor(roomId), [roomId]);
   const historyLoadedRef = useRef(false);
@@ -453,7 +453,6 @@ export const useAIAssistant = ({
             image: snapshot,
             history: nextHistory,
             stream: true,
-            ...(architectureModeRef.current ? { mode: "system" } : {}),
           }),
         });
 
@@ -719,8 +718,6 @@ export const useAIAssistant = ({
     resetConversation,
     autoRespond,
     setAutoRespond,
-    architectureMode,
-    setArchitectureMode,
     notifyUserEdit,
   };
 };

@@ -640,9 +640,11 @@ interface RequestBody {
    */
   stream?: unknown;
   /**
-   * Optional client-side hint. "system" biases the model towards the system
-   * design kind — the Architecture toggle in the panel. Unknown values are
-   * ignored; the model still decides.
+   * Optional caller hint. "system" biases the model towards the system design
+   * kind. No UI sets it — the panel's Architecture toggle was removed, the
+   * classifier below already picking "system" for a request about infrastructure
+   * — so it survives as a request field for callers that want to force the kind.
+   * Unknown values are ignored; the model still decides.
    */
   mode?: unknown;
 }
@@ -816,7 +818,7 @@ export async function POST(request: NextRequest) {
   const wantsStream = body.stream === true;
   const modeHint =
     body.mode === "system"
-      ? "The user has Architecture mode on: prefer the 'system' kind for this request unless it is clearly something else."
+      ? "The caller asked for a system design: prefer the 'system' kind for this request unless it is clearly something else."
       : null;
 
   try {

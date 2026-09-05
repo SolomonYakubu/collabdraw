@@ -67,14 +67,12 @@ describe("saveLocalScene / loadLocalScene", () => {
     expect(restored.elements).toHaveLength(2);
     expect(restored.elements[0].tool).toBe("Square");
     expect(restored.viewport).toEqual(viewport);
-    expect(typeof restored.savedAt).toBe("number");
   });
 
   it("reads an empty scene when nothing was ever saved", () => {
     expect(loadLocalScene()).toEqual({
       elements: [],
       viewport: null,
-      savedAt: null,
     });
   });
 
@@ -98,6 +96,21 @@ describe("saveLocalScene / loadLocalScene", () => {
       }),
     );
     expect(loadLocalScene().elements).toEqual([]);
+  });
+
+  it("reads an entry from before the timestamp was dropped", () => {
+    // Why the version did not need bumping: an unread field costs nothing.
+    storage.setItem(
+      LOCAL_SCENE_KEY,
+      JSON.stringify({
+        version: LOCAL_SCENE_VERSION,
+        elements: [square("a")],
+        viewport,
+        savedAt: Date.now(),
+      }),
+    );
+    expect(loadLocalScene().elements).toHaveLength(1);
+    expect(loadLocalScene().viewport).toEqual(viewport);
   });
 
   it("drops shapes that are not valid elements", () => {

@@ -27,12 +27,6 @@ interface AIAgentPanelProps {
   /** When on, the assistant takes its own turn after each edit to the canvas. */
   autoRespond: boolean;
   onToggleAutoRespond: (autoRespond: boolean) => void;
-  /**
-   * When on, requests bias towards the system design kind — typed components,
-   * tiered layout.
-   */
-  architectureMode: boolean;
-  onToggleArchitectureMode: (architectureMode: boolean) => void;
   onPromptChange: (prompt: string) => void;
   onSend: () => void;
   onDismissError: () => void;
@@ -55,8 +49,6 @@ function AIAgentPanel({
   error,
   autoRespond,
   onToggleAutoRespond,
-  architectureMode,
-  onToggleArchitectureMode,
   onPromptChange,
   onSend,
   onDismissError,
@@ -150,38 +142,6 @@ function AIAgentPanel({
                 }}
               />
               Live
-            </button>
-
-            <button
-              type="button"
-              role="switch"
-              aria-checked={architectureMode}
-              onClick={() => onToggleArchitectureMode(!architectureMode)}
-              title={
-                architectureMode
-                  ? "Architecture mode is on: requests bias towards system designs with typed components. Click to turn off."
-                  : "Architecture mode is off. Turn on to bias requests towards system designs with typed components."
-              }
-              aria-label="Architecture mode: bias towards system design drawings"
-              className="flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-medium transition-colors"
-              style={{
-                background: architectureMode
-                  ? "var(--accent)"
-                  : "var(--hover-bg)",
-                color: architectureMode
-                  ? "var(--accent-contrast)"
-                  : "var(--text-muted)",
-              }}
-            >
-              <span
-                className="h-1.5 w-1.5 rounded-full"
-                style={{
-                  background: architectureMode
-                    ? "var(--accent-contrast)"
-                    : "var(--text-faint)",
-                }}
-              />
-              Arch
             </button>
 
             {messages.length > 0 && (

@@ -6,7 +6,8 @@
  * Rendered by the caller with `open` driven by state, so the answer arrives
  * through `onConfirm` rather than as a return value. That is the one real
  * difference from `confirm()`: the code around it cannot block waiting for a
- * click, so the action moves into the callback.
+ * click, so the action moves into the callback. `secondaryAction` is the other:
+ * `confirm()` has exactly two answers, and some questions have three.
  */
 import { useRef } from "react";
 
@@ -19,6 +20,13 @@ export interface ConfirmDialogProps {
   description?: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  /**
+   * A second way to say yes, for a question with two honest answers — leaving a
+   * room while keeping a copy of its drawing, and leaving without one, are both
+   * leaving. Cancelling is still the only way to say no, so this sits between the
+   * two and is styled as neither: not the recommended path, not the way out.
+   */
+  secondaryAction?: { label: string; onSelect: () => void };
   /** Paints the confirm button as destructive. */
   danger?: boolean;
   onConfirm: () => void;
@@ -31,6 +39,7 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   description,
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
+  secondaryAction,
   danger = false,
   onConfirm,
   onCancel,
@@ -53,6 +62,15 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
           >
             {cancelLabel}
           </button>
+          {secondaryAction && (
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={secondaryAction.onSelect}
+            >
+              {secondaryAction.label}
+            </button>
+          )}
           <button
             ref={confirmRef}
             type="button"

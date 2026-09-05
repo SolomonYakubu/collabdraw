@@ -26,6 +26,7 @@ import {
   FiGrid,
   FiImage,
   FiLock,
+  FiLogOut,
   FiMonitor,
   FiMoon,
   FiSun,
@@ -36,7 +37,6 @@ import {
 } from "react-icons/fi";
 
 import {
-  DEFAULT_STYLE,
   isLinearShape,
   type ElementStyle,
   type Point,
@@ -52,7 +52,6 @@ import {
 import { getSelectionBounds } from "../services/canvas/transform";
 import { decideInitialScene } from "../services/canvas/hydration";
 import {
-  clearLocalScene,
   loadLocalScene,
   saveLocalScene,
 } from "../services/canvas/localScene";
@@ -80,6 +79,7 @@ import { useCanvasCommands } from "../hooks/canvas/useCanvasCommands";
 import { useBoardPersistence } from "../hooks/canvas/useBoardPersistence";
 import { useLocalSceneAutosave } from "../hooks/canvas/useLocalSceneAutosave";
 import { useTheme, type ThemePreference } from "../hooks/useTheme";
+import { useEditorPreferences } from "../hooks/useEditorPreferences";
 import { useCollaborationContext } from "../context/CollaborationContext";
 import { MAX_USER_NAME_LENGTH } from "../services/collaboration/identity";
 
@@ -205,21 +205,23 @@ const Canvas: React.FC<CanvasProps> = ({
   }, [adoptLocalScene]);
 
   const [tool, setTool] = useState<ToolType>(initialTool);
-  /*
-   * The chosen tool stays chosen until another is picked. Excalidraw's default is
-   * to snap back to selection after each shape, which is a surprise when you are
-   * drawing several of the same thing; the lock can still be turned off with Q.
-   */
-  const [toolLocked, setToolLocked] = useState(true);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [style, setStyle] = useState<ElementStyle>(DEFAULT_STYLE);
+  /*
+   * The pen and the tool lock outlive a reload, and are kept out of the saved
+   * scene so they also outlive a session in a room, where scene saving is paused.
+   * Their defaults render first and the stored values arrive in an effect — see
+   * `useEditorPreferences`.
+   */
+  const { style, setStyle, toolLocked, setToolLocked } = useEditorPreferences();
   const [isAIPanelOpen, setIsAIPanelOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isMobileStyleOpen, setIsMobileStyleOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<Point | null>(null);
   const [title, setTitle] = useState(initialTitle ?? "Untitled board");
   /** Which dialog is on screen, if any. `null` means the canvas is unblocked. */
-  const [dialog, setDialog] = useState<"rename" | "reset" | "name" | null>(null);
+  const [dialog, setDialog] = useState<
+    "rename" | "reset" | "name" | "leave" | null
+  >(null);
   const { toasts, show: showToast, dismiss: dismissToast } = useToasts();
 
   const { preference: themePreference, theme, cycle: cycleTheme } = useTheme();
@@ -237,6 +239,7 @@ const Canvas: React.FC<CanvasProps> = ({
     remoteInProgress,
     linkCopied,
     copyShareableLink,
+    scenePersistence,
     sendCursor,
     sendScene,
     sendElements,
@@ -343,17 +346,106 @@ const Canvas: React.FC<CanvasProps> = ({
   });
 
   /*
+   * Local saving stopped working, or started again. A full quota is the
+   * realistic cause, and while it lasts the drawing exists only in this tab —
+   * so the warning stays up until it is dismissed or the next write succeeds,
+   * and it names the way out (a file). Called only on the change, never per
+   * write, so it cannot become a stream of toasts.
+   */
+  const reportAutosaveOutcome = useCallback(
+    (saved: boolean) => {
+      showToast(
+        saved
+          ? "Saving to this browser again."
+          : "This browser's storage is full, so your drawing is no longer being saved here — use Save to file to keep it.",
+        {
+          kind: saved ? "success" : "error",
+          id: "local-autosave",
+          duration: saved ? undefined : 0,
+        },
+      );
+    },
+    [showToast],
+  );
+
+  /*
+   * The room's drawing stopped being kept, or started again.
+   *
+   * While the socket is connected the server is the writer, so it is the only
+   * one that can see this: the board deleted from the gallery in another tab, a
+   * scene too large for the column, Postgres unreachable. It used to be a line
+   * in the server log while the room drew on into a 24-hour Redis cache, so the
+   * work existed right up until it did not. Sticky, single-id and named after
+   * the way out, like the local-autosave warning above — and the recovery is
+   * only announced to somebody who was told of the problem.
+   */
+  const wasUndurableRef = useRef(false);
+  useEffect(() => {
+    const { durable, reason } = scenePersistence;
+    if (durable === null) {
+      return;
+    }
+
+    if (!durable) {
+      wasUndurableRef.current = true;
+      showToast(
+        reason === "deleted"
+          ? "This board was deleted, so your drawing is no longer being saved — use Save to file to keep it."
+          : reason === "too-large"
+            ? "This drawing is too large to save, so it is no longer being kept — use Save to file to keep it."
+            : "The board store cannot be reached, so your drawing is not being saved right now.",
+        { kind: "error", id: "scene-persistence", duration: 0 },
+      );
+      return;
+    }
+
+    if (wasUndurableRef.current) {
+      wasUndurableRef.current = false;
+      showToast("This board is being saved again.", {
+        kind: "success",
+        id: "scene-persistence",
+      });
+    }
+  }, [scenePersistence, showToast]);
+
+  /*
+   * Another tab saved a different scene. `useLocalSceneAutosave` has already
+   * merged it with this one; what is left is to adopt the result.
+   *
+   * Deliberately not committed to history: the other tab's edit is not this
+   * tab's to undo, and pushing it onto the undo stack would let Ctrl+Z here
+   * silently revert work done there. Bindings are re-checked because the merge
+   * can drop elements the other tab deleted, and a selection can name one —
+   * explicitly, since `applyElements` only re-checks them when the element count
+   * changes, and a merge can swap one element for another.
+   */
+  const adoptRemoteScene = useCallback(
+    (merged: Shape[]) => {
+      applyElements(() => removeStaleBindings(merged), {
+        commit: false,
+        broadcast: "none",
+        reconcileBindings: false,
+      });
+      const surviving = new Set(merged.map((element) => element.id));
+      setSelectedIds((current) => current.filter((id) => surviving.has(id)));
+    },
+    [applyElements],
+  );
+
+  /*
    * The no-account tier. Disabled the moment there is a board, because then the
    * server holds the authoritative scene and a second, staler copy in
    * localStorage would only fight it — the same reason Excalidraw takes a
    * `"collaboration"` save lock while you are in a room.
    */
-  useLocalSceneAutosave({
+  const { clearSavedScene } = useLocalSceneAutosave({
     enabled: !boardId,
     elements,
     elementsRef,
     viewport,
     viewportRef,
+    onSaveOutcomeChange: reportAutosaveOutcome,
+    onRemoteChange: adoptRemoteScene,
   });
 
   /**
@@ -605,7 +697,7 @@ const Canvas: React.FC<CanvasProps> = ({
         { changedIds: selectedIds },
       );
     },
-    [applyElements, selectedIds],
+    [applyElements, selectedIds, setStyle],
   );
 
   const handleToolChange = useCallback(
@@ -851,11 +943,54 @@ const Canvas: React.FC<CanvasProps> = ({
    * adopt it, and the socket connects on `/board/<id>` — where the share link
    * lives. This is Excalidraw's "Live collaboration": the room is created from
    * your current drawing, and the drawing itself stays yours locally.
+   *
+   * The handover *is* that flush — the room reads the scene back out of
+   * localStorage — so a refused write would open an empty room and strand the
+   * drawing behind it. Staying put and saying so keeps the drawing on screen.
    */
   const startCollaboration = useCallback(() => {
-    saveLocalScene(elementsRef.current, viewportRef.current);
+    if (!saveLocalScene(elementsRef.current, viewportRef.current)) {
+      showToast(
+        "Could not start a session: this browser's storage is full, so the drawing cannot be handed to the room. Save it to a file first.",
+        { kind: "error", id: "start-collab" },
+      );
+      return;
+    }
     router.push(`/board/${nanoid(10)}?adopt=local`);
-  }, [elementsRef, router, viewportRef]);
+  }, [elementsRef, router, showToast, viewportRef]);
+
+  /**
+   * Leave the room for the local canvas at `/`, with or without a copy of what
+   * was drawn here.
+   *
+   * Local autosave is off for as long as a `boardId` is set — the socket server
+   * holds the authoritative merged scene, and a second, staler copy would only
+   * fight it — so what this browser has saved is still the drawing from *before*
+   * you shared. Going back to `/` restored that one, and everything drawn in the
+   * room was simply not on this device: the board still had it, but nothing said
+   * so and nothing offered to keep it.
+   *
+   * Excalidraw ends a session by writing the room's scene over the local one with
+   * no prompt, which loses the other drawing instead — its own tracker calls that
+   * unexpected (excalidraw#909). Both copies are somebody's work, so this asks
+   * rather than picking for them.
+   */
+  const leaveRoom = useCallback(
+    (keepCopy: boolean) => {
+      setDialog(null);
+      if (keepCopy && !saveLocalScene(elementsRef.current, viewportRef.current)) {
+        // The same refusal as starting a session: staying in the room is
+        // recoverable, leaving with the copy silently unwritten is not.
+        showToast(
+          "Could not keep a copy: this browser's storage is full. Save the drawing to a file instead, then leave.",
+          { kind: "error", id: "leave-room", duration: 0 },
+        );
+        return;
+      }
+      router.push("/");
+    },
+    [elementsRef, router, showToast, viewportRef],
+  );
 
   /**
    * Promote the local scene to a board in Postgres. One request creates the
@@ -975,11 +1110,12 @@ const Canvas: React.FC<CanvasProps> = ({
   const resetCanvas = useCallback(() => {
     setDialog(null);
     clearCanvas();
-    if (!boardId) {
-      clearLocalScene();
-    }
+    // Forgets the stored scene too, and keeps it forgotten — emptying the canvas
+    // would otherwise be autosaved a moment later. Declines inside a room, where
+    // the stored scene is the solo drawing left behind rather than this one.
+    clearSavedScene();
     showToast("Canvas cleared", { kind: "success", id: "reset" });
-  }, [boardId, clearCanvas, showToast]);
+  }, [clearCanvas, clearSavedScene, showToast]);
 
   const menuItems = useMemo<MainMenuItem[]>(
     () => [
@@ -1035,6 +1171,18 @@ const Canvas: React.FC<CanvasProps> = ({
         hint: isCollaborative && linkCopied ? "Copied" : undefined,
         separatorBefore: true,
       },
+      // The way out, which the menu did not have: the gallery links and the back
+      // button leave a room too, but neither is an answer to "I am done here".
+      ...(isCollaborative
+        ? [
+            {
+              id: "leave",
+              label: "Leave the room…",
+              icon: <FiLogOut size={15} />,
+              onSelect: () => setDialog("leave"),
+            },
+          ]
+        : []),
       // Also editable in the collaborator list, but that button only exists in a
       // room — and the name you want is the one you set *before* sharing.
       {
@@ -1079,6 +1227,7 @@ const Canvas: React.FC<CanvasProps> = ({
       router,
       saveToCloud,
       saveToFile,
+      setToolLocked,
       startCollaboration,
       themePreference,
       toolLocked,
@@ -1253,6 +1402,28 @@ const Canvas: React.FC<CanvasProps> = ({
         onCancel={() => setDialog(null)}
       />
 
+      {/* Three answers, because both copies are somebody's work: the room's
+          drawing and the one this browser saved before the room existed. The
+          description says which is which — and does not promise the board is
+          keeping anything while the server is telling us it is not. */}
+      <ConfirmDialog
+        open={dialog === "leave"}
+        title="Leave this room?"
+        description={
+          scenePersistence.durable === false
+            ? "This board is not being saved right now, so a copy on this device may be the only one that survives. Keeping it replaces the drawing this browser saved before you shared."
+            : "The room keeps this drawing, and its link still works. On this device the saved drawing is the one from before you shared — keep a copy to replace it, or leave without keeping to hold on to it."
+        }
+        confirmLabel="Keep a copy"
+        secondaryAction={{
+          label: "Leave without keeping",
+          onSelect: () => leaveRoom(false),
+        }}
+        cancelLabel="Stay"
+        onConfirm={() => leaveRoom(true)}
+        onCancel={() => setDialog(null)}
+      />
+
       {/* Desktop top-centre tool island. On z-40 for the same reason as the menu:
           the collaborator list opens out of it. */}
       <div className="pointer-events-none absolute left-1/2 top-3 z-40 hidden -translate-x-1/2 md:flex">
@@ -1400,8 +1571,6 @@ const Canvas: React.FC<CanvasProps> = ({
         error={ai.error}
         autoRespond={ai.autoRespond}
         onToggleAutoRespond={ai.setAutoRespond}
-        architectureMode={ai.architectureMode}
-        onToggleArchitectureMode={ai.setArchitectureMode}
         onPromptChange={ai.setPrompt}
         onSend={ai.generate}
         onDismissError={ai.dismissError}

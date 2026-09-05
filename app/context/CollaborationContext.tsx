@@ -34,14 +34,43 @@ import type { Point, Shape } from "../types/shapes";
 import type { CursorPositionsMap, User } from "../types/collaboration";
 import { restoreElements } from "../services/canvas/elements";
 import {
+  USER_NAME_KEY,
+  normalizeUserName,
   readUserId,
   readUserName,
   writeUserName,
 } from "../services/collaboration/identity";
+import { subscribeToStorageKey } from "../services/storageSync";
 
 const CURSOR_THROTTLE_MS = 50;
 const PENDING_THROTTLE_MS = 40;
 const STALE_CURSOR_MS = 10_000;
+
+/**
+ * Why the room's drawing is not being kept, in the socket server's own words
+ * (`server/src/db.js`'s write outcomes). The two runtimes share no module, so
+ * these strings are the contract.
+ */
+export type ScenePersistenceReason = "deleted" | "too-large" | "unreachable";
+
+const PERSISTENCE_REASONS: readonly string[] = [
+  "deleted",
+  "too-large",
+  "unreachable",
+];
+
+export interface ScenePersistence {
+  /**
+   * Whether the server's last durable write succeeded — `null` until it has
+   * attempted one, which is not the same as "yes". A room nobody has edited has
+   * nothing to report, and a deployment with no store of record never reports.
+   */
+  durable: boolean | null;
+  reason: ScenePersistenceReason | null;
+}
+
+/** Module-level so the identity is stable: see the setter below. */
+const PERSISTENCE_UNKNOWN: ScenePersistence = { durable: null, reason: null };
 
 export interface CollaborationEventHandlers {
   /** Replace the whole scene (remote undo/redo, clear). */
@@ -64,6 +93,12 @@ interface CollaborationContextValue {
   isEnabled: boolean;
   roomId: string | null;
   userId: string | null;
+  /**
+   * Whether the server is managing to keep this room's drawing, and why not.
+   * The object identity only changes when the answer does, so a consumer can
+   * treat a new one as news.
+   */
+  scenePersistence: ScenePersistence;
   /**
    * The label over your own cursor. Persisted, so it is the same name next time
    * — and editable, which is why it is state here rather than a value the socket
@@ -90,9 +125,9 @@ interface CollaborationContextValue {
   setEventHandlers: (handlers: CollaborationEventHandlers) => void;
 }
 
-const CollaborationContext = createContext<CollaborationContextValue | undefined>(
-  undefined,
-);
+const CollaborationContext = createContext<
+  CollaborationContextValue | undefined
+>(undefined);
 
 export function useCollaborationContext(): CollaborationContextValue {
   const context = useContext(CollaborationContext);
@@ -124,16 +159,20 @@ export const CollaborationContextProvider: React.FC<{
   const [userId, setUserId] = useState<string | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [cursors, setCursors] = useState<CursorPositionsMap>({});
-  const [remoteInProgress, setRemoteInProgress] = useState<Record<string, Shape>>(
-    {},
-  );
+  const [remoteInProgress, setRemoteInProgress] = useState<
+    Record<string, Shape>
+  >({});
   const [shareableLink, setShareableLink] = useState("");
   const [linkCopied, setLinkCopied] = useState(false);
   const [userName, setUserNameState] = useState("");
+  const [scenePersistence, setScenePersistence] =
+    useState<ScenePersistence>(PERSISTENCE_UNKNOWN);
 
-  const identityRef = useRef<{ roomId: string; userId: string; tag: string } | null>(
-    null,
-  );
+  const identityRef = useRef<{
+    roomId: string;
+    userId: string;
+    tag: string;
+  } | null>(null);
   /**
    * The live display name, read through to localStorage on first use.
    *
@@ -188,9 +227,9 @@ export const CollaborationContextProvider: React.FC<{
     identityRef.current = { roomId: currentRoomId, userId: currentUserId, tag };
     setUserId(currentUserId);
     setRoomId(currentRoomId);
-    setShareableLink(
-      `${window.location.origin}/board/${currentRoomId}`,
-    );
+    setShareableLink(`${window.location.origin}/board/${currentRoomId}`);
+    // Whatever the last room was managing to save says nothing about this one.
+    setScenePersistence(PERSISTENCE_UNKNOWN);
 
     const socketUrl =
       process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
@@ -237,34 +276,97 @@ export const CollaborationContextProvider: React.FC<{
       setUsers(incoming);
 
       /*
-       * The roster is authoritative about names, so a peer who renames is
-       * relabelled over their cursor now instead of at their next pointer move.
+       * The roster is authoritative about who is here and what they are called,
+       * and it is the only notice of a departure the server sends: a peer who
+       * closes their tab is simply absent from the next one.
+       *
+       * So somebody who renames is relabelled over their cursor now rather than
+       * at their next pointer move, and somebody who left takes their leftovers
+       * with them. Their cursor would eventually go on its own once it went
+       * stale, but the shape they were part-way through drawing carries no
+       * timestamp: without this it sits on everyone else's canvas until each of
+       * them reconnects.
        */
       const tagById = new Map(incoming.map((user) => [user.id, user.tag]));
+
       setCursors((current) => {
         let changed = false;
-        const next = Object.fromEntries(
-          Object.entries(current).map(([id, cursor]) => {
-            const tag = tagById.get(id);
-            if (!tag || tag === cursor.tag) {
-              return [id, cursor];
-            }
+        const next: CursorPositionsMap = {};
+
+        for (const [id, cursor] of Object.entries(current)) {
+          if (!tagById.has(id)) {
             changed = true;
-            return [id, { ...cursor, tag }];
-          }),
-        );
+            continue;
+          }
+
+          const tag = tagById.get(id);
+          // A roster row with no name is not a reason to unlabel a cursor.
+          if (!tag || tag === cursor.tag) {
+            next[id] = cursor;
+            continue;
+          }
+
+          changed = true;
+          next[id] = { ...cursor, tag };
+        }
+
         return changed ? next : current;
+      });
+
+      setRemoteInProgress((current) => {
+        const departed = Object.keys(current).filter(
+          (id) => !tagById.has(id),
+        );
+        if (departed.length === 0) {
+          return current;
+        }
+
+        const next = { ...current };
+        for (const id of departed) {
+          delete next[id];
+        }
+        return next;
       });
     });
 
-    socket.on("canvas-state-sync", (data: { userId?: string; shapes?: unknown }) => {
-      if (isSelf(data?.userId)) {
-        return;
-      }
-      const incoming = restoreElements(data?.shapes);
-      const handlers = handlersRef.current;
-      (handlers.onInitialScene ?? handlers.onScene)?.(incoming);
-    });
+    /*
+     * The server writes the room's scene, so only it knows when that stopped
+     * working — the board deleted from the gallery in another tab, a scene too
+     * large for the column, Postgres unreachable. It says so after every write
+     * attempt; identity is the change signal, so a consumer re-renders when the
+     * answer changes rather than every three seconds while somebody draws.
+     *
+     * Not cleared on disconnect, unlike the roster: a deleted board is still
+     * deleted, and losing the connection is reported on its own.
+     */
+    socket.on(
+      "scene-persistence",
+      (data: { durable?: unknown; reason?: unknown }) => {
+        const durable = data?.durable === true;
+        const reason =
+          typeof data?.reason === "string" &&
+          PERSISTENCE_REASONS.includes(data.reason)
+            ? (data.reason as ScenePersistenceReason)
+            : null;
+        setScenePersistence((current) =>
+          current.durable === durable && current.reason === reason
+            ? current
+            : { durable, reason },
+        );
+      },
+    );
+
+    socket.on(
+      "canvas-state-sync",
+      (data: { userId?: string; shapes?: unknown }) => {
+        if (isSelf(data?.userId)) {
+          return;
+        }
+        const incoming = restoreElements(data?.shapes);
+        const handlers = handlersRef.current;
+        (handlers.onInitialScene ?? handlers.onScene)?.(incoming);
+      },
+    );
 
     socket.on("request-canvas-state", (data: { targetUserId?: string }) => {
       socket.emit("canvas-state-response", {
@@ -299,37 +401,43 @@ export const CollaborationContextProvider: React.FC<{
       },
     );
 
-    socket.on("shape-in-progress", (data: { userId?: string; shape?: unknown }) => {
-      if (isSelf(data?.userId) || typeof data?.userId !== "string") {
-        return;
-      }
+    socket.on(
+      "shape-in-progress",
+      (data: { userId?: string; shape?: unknown }) => {
+        if (isSelf(data?.userId) || typeof data?.userId !== "string") {
+          return;
+        }
 
-      const [element] = restoreElements([data.shape]);
+        const [element] = restoreElements([data.shape]);
 
-      setRemoteInProgress((current) => {
-        if (!element) {
+        setRemoteInProgress((current) => {
+          if (!element) {
+            const next = { ...current };
+            delete next[data.userId as string];
+            return next;
+          }
+          return {
+            ...current,
+            [data.userId as string]: { ...element, isInProgress: true },
+          };
+        });
+      },
+    );
+
+    socket.on(
+      "drawing-state",
+      (data: { userId?: string; isDrawing?: boolean }) => {
+        if (isSelf(data?.userId) || data?.isDrawing !== false) {
+          return;
+        }
+
+        setRemoteInProgress((current) => {
           const next = { ...current };
           delete next[data.userId as string];
           return next;
-        }
-        return {
-          ...current,
-          [data.userId as string]: { ...element, isInProgress: true },
-        };
-      });
-    });
-
-    socket.on("drawing-state", (data: { userId?: string; isDrawing?: boolean }) => {
-      if (isSelf(data?.userId) || data?.isDrawing !== false) {
-        return;
-      }
-
-      setRemoteInProgress((current) => {
-        const next = { ...current };
-        delete next[data.userId as string];
-        return next;
-      });
-    });
+        });
+      },
+    );
 
     socket.on(
       "canvas-update",
@@ -399,37 +507,35 @@ export const CollaborationContextProvider: React.FC<{
     [],
   );
 
-  const emit = useCallback((event: string, payload: Record<string, unknown>) => {
-    const socket = socketRef.current;
-    const identity = identityRef.current;
+  const emit = useCallback(
+    (event: string, payload: Record<string, unknown>) => {
+      const socket = socketRef.current;
+      const identity = identityRef.current;
 
-    if (!socket?.connected || !identity) {
-      return;
-    }
-
-    socket.emit(event, {
-      roomId: identity.roomId,
-      userId: identity.userId,
-      ...payload,
-    });
-  }, []);
-
-  /**
-   * Rename yourself.
-   *
-   * Three places have to agree: localStorage (so it survives a reload), the
-   * identity the cursor messages are stamped with, and the server's roster. The
-   * local roster row is patched optimistically because the server echo only
-   * arrives if there is a room — on the local canvas at `/` there is no socket
-   * at all, and the name still has to stick.
-   */
-  const setUserName = useCallback(
-    (value: string): boolean => {
-      const stored = writeUserName(value);
-      if (!stored) {
-        return false;
+      if (!socket?.connected || !identity) {
+        return;
       }
 
+      socket.emit(event, {
+        roomId: identity.roomId,
+        userId: identity.userId,
+        ...payload,
+      });
+    },
+    [],
+  );
+
+  /**
+   * Make an already-stored name the live one.
+   *
+   * Three places have to agree: the state the menu renders, the identity the
+   * cursor messages are stamped with, and the server's roster. The local roster
+   * row is patched optimistically because the server echo only arrives if there
+   * is a room — on the local canvas at `/` there is no socket at all, and the
+   * name still has to stick.
+   */
+  const adoptUserName = useCallback(
+    (stored: string) => {
       userNameRef.current = stored;
       setUserNameState(stored);
 
@@ -444,10 +550,43 @@ export const CollaborationContextProvider: React.FC<{
       }
 
       emit("update-user-name", { userTag: stored });
-      return true;
     },
     [emit],
   );
+
+  /** Rename yourself. Persists first, so a refused write changes nothing. */
+  const setUserName = useCallback(
+    (value: string): boolean => {
+      const stored = writeUserName(value);
+      if (!stored) {
+        return false;
+      }
+      adoptUserName(stored);
+      return true;
+    },
+    [adoptUserName],
+  );
+
+  /*
+   * Renaming yourself in another tab renames you here. Both tabs read the name
+   * once and then held it in a ref, so before this the two disagreed for as long
+   * as they stayed open — and whichever one you next renamed overwrote the other.
+   * A cleared entry is ignored rather than treated as a rename: minting a fresh
+   * random name for someone who has one would be a stranger outcome.
+   */
+  useEffect(() => {
+    if (!isClient) {
+      return;
+    }
+
+    return subscribeToStorageKey(USER_NAME_KEY, (value) => {
+      const stored = normalizeUserName(value ?? "");
+      if (!stored || stored === userNameRef.current) {
+        return;
+      }
+      adoptUserName(stored);
+    });
+  }, [adoptUserName, isClient]);
 
   const sendCursor = useCallback(
     (point: Point) => {
@@ -544,6 +683,7 @@ export const CollaborationContextProvider: React.FC<{
       isEnabled: isClient,
       roomId,
       userId,
+      scenePersistence,
       userName,
       setUserName,
       users,
@@ -567,6 +707,7 @@ export const CollaborationContextProvider: React.FC<{
       linkCopied,
       remoteInProgress,
       roomId,
+      scenePersistence,
       sendCursor,
       sendDeletions,
       sendElements,
