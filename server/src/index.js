@@ -6,8 +6,9 @@ const config = require("./config");
 const initSocket = require("./socket");
 const roomStore = require("./state");
 const { closeRedis } = require("./redis");
-const { flushAllRooms } = require("./roomState");
-const { closePool } = require("./db");
+const { flushAllRooms, setPersistenceReporter } = require("./roomState");
+const { SCENE_WRITE, closePool } = require("./db");
+const { createShutdown, installShutdownHandlers } = require("./shutdown");
 const {
   closeGenerationQueue,
   enqueueGenerationJob,
@@ -22,6 +23,29 @@ const server = http.createServer(app);
 
 // Initialize Socket.IO
 const io = initSocket(server);
+
+/**
+ * Tell a room whether its drawing is actually being kept.
+ *
+ * This process is the writer while anyone is connected, and it can fail to write
+ * for reasons only it can see: the board was deleted from the gallery in another
+ * tab, the scene outgrew the column, Postgres is unreachable. Each of those used
+ * to be a line in a log nobody reads, while the room kept drawing into a 24-hour
+ * Redis cache — so the work existed until it silently did not.
+ *
+ * `reason` is the write outcome itself, which is the vocabulary the client
+ * renders; `skipped` is not sent, because a deployment with no store of record
+ * has nothing to warn about.
+ */
+setPersistenceReporter((roomId, outcome) => {
+  if (outcome === SCENE_WRITE.SKIPPED) return;
+  const durable = outcome === SCENE_WRITE.SAVED;
+  io.to(roomId).emit("scene-persistence", {
+    roomId,
+    durable,
+    reason: durable ? null : outcome,
+  });
+});
 
 // Health check endpoint (for Render / Railway / uptime monitors)
 app.get("/", (req, res) => {
@@ -88,23 +112,21 @@ server.listen(config.port, () => {
   console.log(`CollabDraw Socket.IO server running on port ${config.port}`);
 });
 
-// Graceful shutdown handling (SIGINT for local dev, SIGTERM for cloud containers)
-const shutdown = () => {
-  console.log("Shutting down CollabDraw Socket.IO server...");
-  io.close(async () => {
-    // Persist any dirty rooms before the process exits.
-    await flushAllRooms().catch(() => {});
-    await closeGenerationQueue().catch(() => {});
-    await closeRedis().catch(() => {});
-    await closePool().catch(() => {});
-    server.close(() => {
-      console.log("Server has been closed");
-      process.exit(0);
-    });
-  });
-};
+// Graceful shutdown handling (SIGINT for local dev, SIGTERM for cloud
+// containers, and a crash, which is the one that used to exit with the rooms
+// unwritten). The ordering and the reasoning live in ./shutdown.
+const shutdown = createShutdown({
+  io,
+  server,
+  flushRooms: flushAllRooms,
+  closers: [
+    { name: "the generation queue", close: closeGenerationQueue },
+    { name: "Redis", close: closeRedis },
+    { name: "the Postgres pool", close: closePool },
+  ],
+  timeoutMs: config.shutdownTimeoutMs,
+});
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+installShutdownHandlers(shutdown);
 
-module.exports = { app, server, io };
+module.exports = { app, server, io, shutdown };

@@ -62,6 +62,22 @@ const isValidRoomId = (roomId) =>
   roomId.length > 0 &&
   roomId.length <= MAX_ROOM_ID_LENGTH;
 
+/**
+ * Board ids the app can actually open — the same pattern
+ * `app/lib/boardAccess.ts` enforces on the `/board/[id]` route (`nanoid(10)` in
+ * shape, bounded because the id is a primary key).
+ *
+ * Narrower than `isValidRoomId` on purpose: a room id is only length-bounded, so
+ * it can hold anything a client sends. That is harmless while the durable write
+ * is an UPDATE and simply matches nothing, but it is not harmless once the write
+ * can *create* a row — a board keyed by something `/board/<id>` would refuse to
+ * open is one nobody could ever reach.
+ */
+const BOARD_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+const isValidBoardId = (id) =>
+  typeof id === "string" && BOARD_ID_PATTERN.test(id);
+
 /** Clamp a user tag to a safe display length. */
 const clampTag = (tag) =>
   typeof tag === "string" ? tag.slice(0, MAX_TAG_LENGTH) : undefined;
@@ -77,6 +93,7 @@ module.exports = {
   MAX_SHAPES_PER_UPDATE,
   clampCoordinate,
   clampTag,
+  isValidBoardId,
   isValidRoomId,
   sanitizeDeletedIds,
   sanitizeShapes,

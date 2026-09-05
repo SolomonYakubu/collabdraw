@@ -59,6 +59,31 @@ async function deleteCanvasState(roomId) {
 const flushTimers = new Map();
 /** @type {Map<string, Array<any>>} roomId -> the scene awaiting a flush */
 const latestScene = new Map();
+/**
+ * @type {Set<Promise<void>>} writes started but not yet finished.
+ *
+ * A flush is usually started by something that cannot hold it: the debounce
+ * timer fires one from a callback, and `state.js` fires one with `void` when the
+ * last user leaves a room. So this is what shutdown has to wait on. Without it
+ * `flushAllRooms` asks which rooms are dirty, finds that every scene has already
+ * been handed to a write in flight, and reports itself finished — which is how
+ * the process came to exit, and to close the pool, with the last edits of every
+ * room still in the air.
+ */
+const inFlight = new Set();
+
+/**
+ * How a room finds out whether its work is being kept. `index.js` sets this to
+ * an emit; the wiring is inverted rather than requiring the socket server here,
+ * because `state.js` requires this module and the socket handlers require
+ * `state.js` — and because a flush has to work in tests that have no `io` at all.
+ */
+let reportPersistence = () => {};
+
+/** @param {(roomId: string, outcome: string) => void} reporter */
+function setPersistenceReporter(reporter) {
+  reportPersistence = typeof reporter === "function" ? reporter : () => {};
+}
 
 /** Remember the merged scene and schedule a debounced flush. Cheap per call. */
 function scheduleFlush(roomId, shapes) {
@@ -73,14 +98,53 @@ function scheduleFlush(roomId, shapes) {
   flushTimers.set(roomId, timer);
 }
 
-/** Write the remembered scene to Redis and Postgres, then forget it. */
+/**
+ * Write the remembered scene to Redis and Postgres, then forget it.
+ *
+ * Deliberately never rejects. Both stores already log their own failures, and
+ * the callers that matter hold nothing — a rejection would surface as an
+ * unhandled one, which for a server process means a crash instead of a line in
+ * the log. It is also what lets one unreachable store not abandon the others
+ * during a shutdown flush.
+ */
 async function flushRoom(roomId) {
   const shapes = latestScene.get(roomId);
   if (!shapes) return;
   latestScene.delete(roomId);
 
-  await saveCanvasState(roomId, shapes);
-  await saveBoardScene(roomId, shapes);
+  const write = (async () => {
+    try {
+      await saveCanvasState(roomId, shapes);
+      const outcome = await saveBoardScene(roomId, shapes);
+      // Reported on every attempt rather than only when it changes. The
+      // alternative is a per-room memory of the last outcome, which for a
+      // long-lived process is a map of every room it has ever seen and nobody to
+      // clean it; the client already holds the one value it cares about and only
+      // speaks up when that changes. Redis is not consulted — it is the cache,
+      // and losing a cache write costs nothing durable.
+      reportPersistence(roomId, outcome);
+    } catch (error) {
+      console.error(`Room flush failed for ${roomId}:`, error.message);
+    }
+  })();
+
+  inFlight.add(write);
+  try {
+    await write;
+  } finally {
+    inFlight.delete(write);
+  }
+}
+
+/**
+ * Wait for the writes already in flight. The loop is not paranoia: awaiting one
+ * round can let a flush that started meanwhile begin, and shutdown wants the
+ * stores quiet rather than merely quieter.
+ */
+async function drainFlushes() {
+  while (inFlight.size > 0) {
+    await Promise.all(inFlight);
+  }
 }
 
 /** Flush immediately (room-empty / shutdown), cancelling any pending timer. */
@@ -102,6 +166,10 @@ async function flushAllRooms() {
   for (const timer of flushTimers.values()) clearTimeout(timer);
   flushTimers.clear();
   await Promise.all(Array.from(ids).map((id) => flushRoom(id)));
+  // Then the scenes that were already handed to a write — a room that emptied a
+  // moment ago, a debounce that had just fired. Those are not dirty rooms any
+  // more, so the pass above cannot see them, and nobody else is waiting.
+  await drainFlushes();
 }
 
 module.exports = {
@@ -110,6 +178,7 @@ module.exports = {
   saveCanvasState,
   loadBoardScene,
   scheduleFlush,
+  setPersistenceReporter,
   flushRoomNow,
   flushAllRooms,
 };

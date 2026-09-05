@@ -87,6 +87,12 @@ class RoomStore {
       // Forced durable flush before the in-memory scene is dropped, so the last
       // edits survive the room going empty. Lazy require avoids a load-time
       // cycle (roomState -> db -> ... does not import state).
+      //
+      // Nothing holds the returned promise — this method is synchronous, and the
+      // disconnect it serves has a roster to broadcast. `roomState` keeps track
+      // of the write instead, which is how shutdown can wait for it: `io.close()`
+      // disconnects everyone at once, so these are the flushes that decide
+      // whether the last minute of a session survives.
       const finalScene = this.roomCanvasStates.get(roomId);
       if (Array.isArray(finalScene) && finalScene.length > 0) {
         const { flushRoomNow } = require("./roomState");
