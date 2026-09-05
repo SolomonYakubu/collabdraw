@@ -200,7 +200,13 @@ optional — with the socket server down the editor works locally and shows
 Opening the app puts you on a canvas with your last drawing already on it. That
 needs no account and no database: the scene is kept in this browser
 (`localStorage.collabdraw_scene`, written on a 300 ms debounce and flushed when
-the tab goes away), the way excalidraw.com works.
+the tab goes away), the way excalidraw.com works. Open a second tab and the two
+merge rather than overwrite each other.
+
+Your pen — colour, fill, width, opacity, sloppiness, edge style — and the tool
+lock live in a separate key (`localStorage.collabdraw_preferences`), so they
+survive a reload and also a session in a room, where scene saving is paused.
+Theme is its own key again (`collabdraw_theme`).
 
 Everything else is a choice in the main menu, top-left:
 
@@ -212,6 +218,7 @@ Everything else is a choice in the main menu, top-left:
 | Rename board… | In a room, where "Save to my boards" would be: the board is already saved, so the menu offers its name instead. The canvas itself carries no title field. |
 | My boards | `/boards`, the gallery of what you have saved. |
 | Live collaboration | Starts a room from the drawing on screen and hands you a share link. |
+| Reset the canvas | Clears the drawing and forgets the browser's copy of it — nothing is written back, so the next visit starts empty. In a room it clears the board for everyone and leaves your local drawing alone. |
 
 Live collaboration needs neither an account nor a saved board: the share button
 in the toolbar mints a room, carries your current scene into it, and the socket
@@ -286,11 +293,40 @@ npm test
 Vitest covers the pure layers — geometry, the viewport transform, element
 construction, hit testing, bindings, linear elements, the elbow router,
 transforms, snapping and the AI intent/layout/build pipeline — plus the renderer
-itself through node-canvas.
+itself through node-canvas, and the socket server end to end: every room, canvas
+and cursor event, the durable scene write and its flush bookkeeping, the Redis
+snapshot cache, the HTTP routes, the job queue and worker, and the shutdown
+sequence. `server/src/` is at 99% of statements; what is left needs a live
+Postgres.
 
-Not yet covered: the socket server (`server/`), every React component, hook and
-context under `app/`, and the API routes — see [#14](https://github.com/SolomonYakubu/collabdraw/issues/14)
-and [#15](https://github.com/SolomonYakubu/collabdraw/issues/15).
+The Next.js server side is covered too: `middleware.ts`, all six API routes,
+the query layer in `app/lib/db.ts`, the rate limiter on both its Redis and
+in-memory paths, and the provider transports in `app/services/ai/llm.ts` — the
+routes run against a fake `pg` driver and a fake provider, so the SQL and the
+request that would go on the wire are what the tests read.
+
+The client is the larger half: every component under `app/components`, every hook
+under `app/hooks`, and the collaboration context — the client half of the socket
+protocol, the persistence cadence (the debounce, the pause while collaborating,
+the skipped write on a hidden tab, the flush on unmount), and the editor itself,
+where the tests drive pointer events and read back the scene the renderer was
+asked to paint. So are the five route files, including the pre-hydration theme
+script and each way a missing or unreachable Postgres has to degrade rather than
+throw — a Server Component that throws reaches the browser as a render error.
+
+That is just over 2,000 tests: 96% of statements overall, 100% of the API and
+route files, 99% of `app/components` and of `server/src`. Not covered:
+`scripts/*.mjs`, which CI runs against a real Postgres instead, and
+`app/types/collaboration.ts`, which is types only.
+
+There is no end-to-end suite. Two clients converging on one canvas is the app's
+central claim and nothing verifies it the way a user would — see
+[#15](https://github.com/SolomonYakubu/collabdraw/issues/15).
+
+GitHub Actions runs `npm run typecheck`, `npm test`, `npm run lint` and
+`npm run build` on every push to `main` and every pull request, and applies
+`migrations/` to a throwaway Postgres to check the schema the app expects. It
+needs no secrets, so it reports the same way on a fork's pull request.
 
 ## Contributing
 

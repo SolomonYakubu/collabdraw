@@ -118,7 +118,10 @@ export interface BaseShape {
   y: number;
   width: number;
   height: number;
-  /** Rotation in radians. Reserved: the editor keeps this at 0 for now. */
+  /**
+   * Rotation about the element's own centre, clockwise, in radians. The rotation
+   * grip writes it through `normalizeAngle`, so it is always in `[0, 2π)`.
+   */
   angle: number;
   stroke: string;
   strokeWidth: number;
