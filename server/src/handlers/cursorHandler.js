@@ -49,11 +49,20 @@ function registerCursorHandlers(io, socket) {
 
   // Handle drawing state updates (isDrawing flag for status indicators)
   socket.on("drawing-state", (data) => {
-    const { roomId } = data || {};
+    const { roomId, userId } = data || {};
     if (!isValidRoomId(roomId)) return;
     if (roomStore.userRooms.get(socket.id) !== roomId) return;
 
-    socket.to(roomId).emit("drawing-state", { roomId, isDrawing: Boolean(data && data.isDrawing) });
+    // `userId` is what makes this actionable: the receiver's job is to drop *that*
+    // peer's in-progress preview, and without a name to hang it on the event is
+    // unattributable and does nothing. Same reason the two handlers above bail.
+    if (userId === undefined) return;
+
+    socket.to(roomId).emit("drawing-state", {
+      roomId,
+      userId,
+      isDrawing: Boolean(data && data.isDrawing),
+    });
   });
 }
 

@@ -8,12 +8,15 @@
 async function defaultProcessor(job) {
   const { prompt, mode, roomId, userId } = job.data || {};
 
-  console.log(`[Job ${job.id}] Processing generation request: "${prompt?.slice(0, 50)}..."`);
-  await job.updateProgress(10);
-
+  // Before the log line, which reads the prompt: a non-string one fails here with
+  // a reason worth recording, rather than on `.slice` with a TypeError that BullMQ
+  // stores as the job's error and `/jobs/:jobId` hands to the client.
   if (!prompt || typeof prompt !== "string") {
     throw new Error("Job payload must contain a valid prompt string.");
   }
+
+  console.log(`[Job ${job.id}] Processing generation request: "${prompt.slice(0, 50)}..."`);
+  await job.updateProgress(10);
 
   // Simulate or process steps
   await job.updateProgress(40);
