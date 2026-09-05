@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { resolveProvider } from "../llm";
 
 /** Save and clear the env vars the resolver reads, per test. */
@@ -42,8 +42,6 @@ const withEnv = (
 };
 
 describe("resolveProvider", () => {
-  afterEach(() => {});
-
   it("returns null when no key is configured", () => {
     withEnv({}, () => {
       expect(resolveProvider()).toBeNull();
@@ -128,99 +126,8 @@ describe("resolveProvider", () => {
   });
 });
 
-/* ------------------------------------------------------------------ *
- * SSE flattening (the OpenAI-compatible streaming path)
- * ------------------------------------------------------------------ */
-
-/**
- * The buffering loop inside `streamDrawing`, extracted so it can be tested
- * without a network. Keep in sync with the implementation.
- *
- * The bug this guards against: splitting each network chunk on "\n"
- * independently drops every delta whenever the provider splits one SSE line
- * across two chunks — which read to the user as an endless spinner.
+/*
+ * The transports themselves — the request that goes on the wire, the schema
+ * translation and the SSE flattening — are covered in `llmTransport.test.ts`,
+ * against the real `completeDrawing` and `streamDrawing`.
  */
-const flattenSse = async (chunks: string[]): Promise<string> => {
-  let pending = "";
-  let out = "";
-
-  for (const value of chunks) {
-    pending += value;
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) {
-        continue;
-      }
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === "[DONE]") {
-        continue;
-      }
-      try {
-        const chunk = JSON.parse(payload) as {
-          choices?: Array<{ delta?: { content?: string | null } }>;
-        };
-        const piece = chunk.choices?.[0]?.delta?.content;
-        if (piece) {
-          out += piece;
-        }
-      } catch {
-        // Malformed complete lines are skipped.
-      }
-    }
-  }
-
-  return out;
-};
-
-const sseLine = (content: string): string =>
-  `${JSON.stringify({
-    choices: [{ delta: { content }, finish_reason: null }],
-  })}\n`;
-
-describe("OpenAI-compatible SSE flattening", () => {
-  it("reassembles content from well-formed chunks", async () => {
-    const result = await flattenSse([
-      `data: ${sseLine("{\n")}`,
-      `data: ${sseLine('"kind"')}`,
-      `data: ${sseLine(":1}")}`,
-      "data: [DONE]\n",
-    ]);
-
-    expect(result).toBe('{\n"kind":1}');
-  });
-
-  it("survives an SSE line split across two network chunks", async () => {
-    const full = `data: ${sseLine("hello")}`;
-    const cut = Math.floor(full.length / 2);
-
-    const result = await flattenSse([full.slice(0, cut), full.slice(cut)]);
-
-    expect(result).toBe("hello");
-  });
-
-  it("drops nothing when every chunk boundary lands mid-line", async () => {
-    const stream =
-      `data: ${sseLine("one")}` +
-      `data: ${sseLine("two")}` +
-      `data: ${sseLine("three")}`;
-
-    // One character at a time: worst possible chunking.
-    const chars = stream.split("");
-
-    expect(await flattenSse(chars)).toBe("onetwothree");
-  });
-
-  it("handles comment keep-alive lines between data lines", async () => {
-    const result = await flattenSse([
-      ": OPENROUTER PROCESSING\n\n",
-      `data: ${sseLine("ok")}\n`,
-      ": OPENROUTER PROCESSING\n\n",
-      "data: [DONE]\n",
-    ]);
-
-    expect(result).toBe("ok");
-  });
-});

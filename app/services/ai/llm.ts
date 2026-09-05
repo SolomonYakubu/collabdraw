@@ -355,22 +355,28 @@ const postChatCompletions = async (
 
   const first = await send({ ...payload, ...REASONING_OFF });
 
-  if (!first.ok) {
+  if (first.ok || first.status !== 400) {
     return first;
   }
 
   /*
-   * Only a *rejected* response_format justifies a retry without it. The body
-   * must not be read here: on the streaming path this is the live stream, and
-   * consuming it to sniff for an error string would stall the whole reply —
-   * which showed up as the client waiting forever on zero bytes.
+   * Only a *rejected* response_format justifies a retry without it, and only an
+   * error body may be read to find out. A 2xx body must be left alone: on the
+   * streaming path it is the live stream, and consuming it to sniff for an error
+   * string stalls the whole reply — which showed up as the client waiting
+   * forever on zero bytes.
    */
-  const { response_format: _dropped, ...rest } = payload;
-  void _dropped;
-  if (!rejectedResponseFormat(first.status, "")) {
-    return first;
+  const detail = await first.text();
+  if (!rejectedResponseFormat(first.status, detail)) {
+    // The body has been read, so hand the error path an equivalent response.
+    return new Response(detail, {
+      status: first.status,
+      statusText: first.statusText,
+    });
   }
 
+  const { response_format: _dropped, ...rest } = payload;
+  void _dropped;
   return send({ ...rest, ...REASONING_OFF });
 };
 
