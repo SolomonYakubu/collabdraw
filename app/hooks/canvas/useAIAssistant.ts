@@ -85,7 +85,9 @@ const SNAPSHOT_JPEG_QUALITY = 0.7;
  */
 export const AUTO_RESPOND_DELAY_MS = 3000;
 
-/** Grace period after the assistant writes, so its own edits never retrigger. */
+/**
+ * Grace period after the assistant writes, so its own edits never retrigger.
+ */
 export const AI_WRITE_SETTLE_MS = 400;
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -265,6 +267,16 @@ export const useAIAssistant = ({
       const controller = new AbortController();
       abortRef.current = controller;
 
+      // Mark as writing immediately so notifyUserEdit never mistakes events
+      // triggered during this entire turn (including remote canvas-updates that
+      // arrive while we await the HTTP response) as user edits that would
+      // schedule a new auto-turn.  Previously the flag was only set deep inside
+      // revealWhole / stream processing, leaving a window at the start of every
+      // turn where an incoming collaboration message could slip through and queue
+      // a second generate() call — which, when the first finished, kicked off a
+      // rapid feedback loop that flooded the socket and disconnected peers.
+      aiWritingRef.current = true;
+
       setIsGenerating(true);
       setError(null);
 
@@ -382,8 +394,6 @@ export const useAIAssistant = ({
 
         const builtIds = new Set(built.elements.map((element) => element.id));
         const removedIds = new Set(built.removedIds);
-
-        aiWritingRef.current = true;
 
         const batchSize =
           built.elements.length > 30 ? 4 : built.elements.length > 12 ? 3 : 2;
@@ -506,7 +516,6 @@ export const useAIAssistant = ({
           if (kind === "scene" && placement && !frame) {
             frame = streamSceneFrame(placement);
             didStreamScene = true;
-            aiWritingRef.current = true;
           }
 
           if (didStreamScene && frame && placement) {
@@ -644,8 +653,12 @@ export const useAIAssistant = ({
         }
 
         // Let the trailing scene change settle before edits count as the user's.
+        // The flag is cleared only when this turn is still the current one; a
+        // turn that began meanwhile set it at its own start and keeps it set.
         window.setTimeout(() => {
-          aiWritingRef.current = false;
+          if (requestSeqRef.current === sequence) {
+            aiWritingRef.current = false;
+          }
         }, AI_WRITE_SETTLE_MS);
       }
     },
