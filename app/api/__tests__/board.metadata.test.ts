@@ -69,7 +69,7 @@ describe("renaming a board", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
     expect(pg.flatten(pg.queries[1].text)).toBe(
-      "update boards set title = $2, updated_at = now() where id = $1",
+      "update boards set title = $2, updated_at = now() where id = $1 and deleted_at is null",
     );
     expect(pg.queries[1].params).toEqual(["b1", "Q3 roadmap"]);
   });

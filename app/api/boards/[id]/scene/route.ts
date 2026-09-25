@@ -67,12 +67,18 @@ export async function PUT(request: NextRequest, { params }: Params) {
     const viewport = readViewport(payload?.viewport);
 
     // Create-on-demand: a shared-link first save must not 404. Without a
-    // device id there is no honest owner to record, so only the scene is saved
-    // — and if the row does not exist yet, nothing is.
+    // device id there is no honest owner to record, so only the scene is saved.
     if (deviceId) {
       await ensureBoard(id, deviceId);
     }
-    await saveBoardScene(id, scene, viewport);
+
+    // Nothing written means there was no live row to write: unknown id, or a
+    // board deleted before this flush landed. Reporting `{ ok: true }` for that
+    // hid the difference between saved and gone.
+    const saved = await saveBoardScene(id, scene, viewport);
+    if (!saved) {
+      return NextResponse.json({ error: "Not found." }, { status: 404 });
+    }
 
     return NextResponse.json({ ok: true });
   } catch (error) {

@@ -225,7 +225,10 @@ export async function updateBoardTitle(
   title: string,
 ): Promise<void> {
   await query(
-    `update boards set title = $2, updated_at = now() where id = $1`,
+    // Guarded like the scene write: a board soft-deleted between the route's
+    // read and this write must not come back to life as a renamed row.
+    `update boards set title = $2, updated_at = now()
+      where id = $1 and deleted_at is null`,
     [id, title],
   );
 }
@@ -255,12 +258,21 @@ export async function softDeleteBoard(id: string): Promise<void> {
 }
 
 /** Offline / beacon scene write from the client (last-write-wins). */
+/**
+ * Write a scene to its board row, reporting whether a row was actually touched.
+ *
+ * `false` means nothing was written: the board never existed, it was soft-deleted
+ * before this flush landed, or a cookieless caller had no row to update. The
+ * caller can then say so instead of answering `{ ok: true }` for a write that did
+ * not happen. `returning id` is how the row count comes back through the shared
+ * `query` helper, which only exposes rows.
+ */
 export async function saveBoardScene(
   id: string,
   scene: Shape[],
   viewport: Viewport | null,
-): Promise<void> {
-  await query(
+): Promise<boolean> {
+  const rows = await query<{ id: string }>(
     // A soft-deleted board keeps its tombstone: an offline tab flushing its
     // last scene must not rewrite the row of a board deleted from the gallery.
     `update boards
@@ -268,9 +280,11 @@ export async function saveBoardScene(
             viewport = $3::jsonb,
             element_count = $4,
             updated_at = now()
-      where id = $1 and deleted_at is null`,
+      where id = $1 and deleted_at is null
+      returning id`,
     [id, JSON.stringify(scene), viewport ? JSON.stringify(viewport) : null, scene.length],
   );
+  return rows.length > 0;
 }
 
 export async function recordBoardOpen(

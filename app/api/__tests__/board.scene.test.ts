@@ -50,6 +50,10 @@ const write = () => pg.queries[pg.queries.length - 1];
 beforeEach(() => {
   pg.reset();
   cookies.reset();
+  // The write is guarded and returns a row only when it matched one. Queue a
+  // written row as the default, so most tests exercise the saved path; the test
+  // for the unmatched case resets and queues nothing.
+  pg.answerWith([{ id: "b1" }], [{ id: "b1" }]);
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -70,7 +74,7 @@ describe("saving a scene", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
     expect(pg.flatten(write().text)).toBe(
-      "update boards set scene = $2::jsonb, viewport = $3::jsonb, element_count = $4, updated_at = now() where id = $1 and deleted_at is null",
+      "update boards set scene = $2::jsonb, viewport = $3::jsonb, element_count = $4, updated_at = now() where id = $1 and deleted_at is null returning id",
     );
     expect(write().params[0]).toBe("b1");
     expect(JSON.parse(write().params[1] as string)).toHaveLength(2);
@@ -176,6 +180,18 @@ describe("a scene it will not save", () => {
     expect(response.status).toBe(413);
     expect(await response.json()).toEqual({ error: "Scene too large." });
     expect(pg.queries).toEqual([]);
+  });
+
+  it("says the board is gone rather than reporting a save that never happened", async () => {
+    // No row matched: the board was never there, or it was deleted before this
+    // flush landed. `{ ok: true }` here is the lie the row count now prevents.
+    pg.reset();
+    cookies.setDeviceId("");
+
+    const response = await PUT(save({ scene: [shape("a")] }), context());
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Not found." });
   });
 
   it("refuses a body that is not JSON", async () => {
