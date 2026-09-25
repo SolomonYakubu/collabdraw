@@ -53,7 +53,13 @@ export type Interaction =
       which: "start" | "end";
       snapshot: Shape[];
     }
-  | { type: "waypoint"; arrowId: string; index: number }
+  | {
+      type: "waypoint";
+      arrowId: string;
+      index: number;
+      /** Pre-gesture elements, so Escape can undo an inserted bend too. */
+      snapshot: Shape[];
+    }
   | {
       type: "rotating";
       snapshot: Shape[];

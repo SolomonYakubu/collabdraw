@@ -532,12 +532,17 @@ export const usePointerInteraction = ({
               type: "waypoint",
               arrowId: arrow.id,
               index,
+              snapshot: selected.map((element) => ({ ...element })),
             };
             return;
           }
 
           // Pulling a phantom handle out of a segment creates a new bend there,
-          // which then becomes the thing being dragged.
+          // which then becomes the thing being dragged. The snapshot is taken
+          // before the insert, so cancelling drops the new bend rather than
+          // leaving it behind.
+          const snapshot = selected.map((element) => ({ ...element }));
+
           applyElements(
             (previous) =>
               previous.map((element) =>
@@ -555,6 +560,7 @@ export const usePointerInteraction = ({
             type: "waypoint",
             arrowId: arrow.id,
             index,
+            snapshot,
           };
           return;
         }
@@ -1155,9 +1161,14 @@ export const usePointerInteraction = ({
     if (
       interaction.type === "dragging" ||
       interaction.type === "resizing" ||
-      interaction.type === "rotating"
+      interaction.type === "rotating" ||
+      interaction.type === "endpoint" ||
+      interaction.type === "waypoint"
     ) {
-      // Put the elements back exactly as they were before the gesture.
+      // Put the elements back exactly as they were before the gesture. Endpoint
+      // and waypoint drags mutate the scene on every move with `commit: false`,
+      // so without this a cancelled drag stayed applied and uncommitted, and
+      // peers kept the intermediate geometry with no correcting update.
       const snapshot = interaction.snapshot;
       const byId = new Map(snapshot.map((element) => [element.id, element]));
       applyElements(

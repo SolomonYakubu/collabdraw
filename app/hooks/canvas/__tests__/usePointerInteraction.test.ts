@@ -1794,6 +1794,61 @@ describe("cancelling", () => {
     expect(harness.find("a").x).toBe(100);
     expect(harness.applied).toHaveLength(applies);
   });
+
+  it("puts an arrow's endpoint back, without an undo step", () => {
+    // Endpoint drags apply on every move with `commit: false`. Cancelling used to
+    // clear the handles but leave the moved end — and, in a room, peers were left
+    // with the intermediate geometry and no correcting update.
+    const harness = makeHarness([arrow("a")], { selectedIds: ["a"] });
+    const { result } = setup(harness);
+
+    down(result, ...atPoint(handleAt(harness, "end", ["a"])));
+    move(result, 400, 300);
+    expect((harness.find("a") as LinearShape).x2).not.toBe(200);
+
+    act(() => result.current.cancel());
+
+    const after = harness.find("a") as LinearShape;
+    expect({ x1: after.x1, y1: after.y1, x2: after.x2, y2: after.y2 }).toEqual({
+      x1: 0,
+      y1: 100,
+      x2: 200,
+      y2: 100,
+    });
+    expect(harness.commits).toBe(0);
+  });
+
+  it("puts a moved bend back", () => {
+    const harness = makeHarness([arrow("a", { midPoints: [100, 200] })], {
+      selectedIds: ["a"],
+    });
+    const { result } = setup(harness);
+
+    down(result, ...atPoint(handleAt(harness, "mid-0", ["a"])));
+    move(result, 140, 260);
+    expect((harness.find("a") as LinearShape).midPoints).toEqual([140, 260]);
+
+    act(() => result.current.cancel());
+
+    expect((harness.find("a") as LinearShape).midPoints).toEqual([100, 200]);
+    expect(harness.commits).toBe(0);
+  });
+
+  it("drops a bend that a cancelled drag had just pulled out", () => {
+    // The insert happens before the interaction exists, so the snapshot has to be
+    // taken before the insert or cancelling leaves the new bend behind.
+    const harness = makeHarness([arrow("a")], { selectedIds: ["a"] });
+    const { result } = setup(harness);
+
+    down(result, ...atPoint(handleAt(harness, "add-0", ["a"])));
+    move(result, 100, 200);
+    expect((harness.find("a") as LinearShape).midPoints).toEqual([100, 200]);
+
+    act(() => result.current.cancel());
+
+    expect((harness.find("a") as LinearShape).midPoints).toEqual([]);
+    expect(harness.commits).toBe(0);
+  });
 });
 
 /**
