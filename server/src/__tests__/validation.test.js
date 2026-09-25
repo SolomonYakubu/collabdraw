@@ -25,8 +25,10 @@ describe("sanitizeShapes", () => {
     expect(sanitizeShapes("nope")).toBeNull();
   });
 
-  it("returns null rather than an empty array when nothing survives", () => {
-    expect(sanitizeShapes([])).toBeNull();
+  it("keeps a deliberately empty array, but rejects an all-junk one", () => {
+    // An empty array is a real message — it is how undo-to-empty and clear are
+    // broadcast — while an array of garbage is not.
+    expect(sanitizeShapes([])).toEqual([]);
     expect(sanitizeShapes([1, "x", null, []])).toBeNull();
   });
 
@@ -71,12 +73,17 @@ describe("sanitizeDeletedIds", () => {
     expect(sanitizeDeletedIds([1, null, {}])).toBeNull();
   });
 
-  it("drops over-long ids and caps the count", () => {
+  it("drops over-long ids", () => {
     expect(sanitizeDeletedIds(["ok", "x".repeat(129)])).toEqual(["ok"]);
-    const many = Array.from({ length: MAX_SHAPES_PER_UPDATE + 10 }, (_, i) =>
+  });
+
+  it("caps deletions at what a room can hold, not the per-update shape cap", () => {
+    // A bulk clear names every shape in the room; capping at the smaller
+    // per-update shape limit would leave the tail of a large canvas undeleted.
+    const many = Array.from({ length: MAX_SHAPES_PER_ROOM + 10 }, (_, i) =>
       String(i),
     );
-    expect(sanitizeDeletedIds(many)).toHaveLength(MAX_SHAPES_PER_UPDATE);
+    expect(sanitizeDeletedIds(many)).toHaveLength(MAX_SHAPES_PER_ROOM);
   });
 });
 

@@ -242,14 +242,18 @@ export const useAIAssistant = ({
     }
   }, [history, storageKey]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set on setup as well as initialised, because StrictMode runs every effect
+    // setup -> cleanup -> setup on mount in development. Without this the
+    // cleanup latches `mountedRef` to false for the life of the component, and
+    // the first stream chunk is treated as stale forever.
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
       requestSeqRef.current += 1;
       abortRef.current?.abort();
-    },
-    [],
-  );
+    };
+  }, []);
 
   const generate = useCallback(
     async ({
@@ -707,6 +711,14 @@ export const useAIAssistant = ({
   );
 
   const resetConversation = useCallback(() => {
+    // Cancel any turn in flight first. Otherwise its reply lands after the clear
+    // and re-appends the pre-clear transcript from the closure it captured.
+    requestSeqRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    aiWritingRef.current = false;
+    setIsGenerating(false);
+
     setHistory([]);
     setPrompt("");
     setError(null);

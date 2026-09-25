@@ -12,7 +12,7 @@ import {
   readViewport,
   withinByteLimit,
 } from "../../lib/boardAccess";
-import { isAllowedRateLimit } from "../../lib/rateLimit";
+import { clientIp, isAllowedRateLimit } from "../../lib/rateLimit";
 import { restoreElements } from "../../services/canvas/elements";
 import type { Shape, Viewport } from "../../types/shapes";
 
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No device id." }, { status: 400 });
     }
 
-    const ip = request.headers.get("x-forwarded-for")?.split(",")[0] ?? "unknown";
+    const ip = clientIp(request);
     if (!(await isAllowedRateLimit(`board-create:${ip}`, 30, 60))) {
       return NextResponse.json({ error: "Too many requests." }, { status: 429 });
     }

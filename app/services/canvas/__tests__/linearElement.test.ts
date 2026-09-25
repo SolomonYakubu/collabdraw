@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createElement, getElementBounds, translateElement } from "../elements";
+import {
+  createElement,
+  getElementBounds,
+  toElementLocal,
+  translateElement,
+} from "../elements";
 import { applyBindings, createBinding } from "../bindings";
 import { hitTestElement } from "../hitTest";
 import {
@@ -296,6 +301,57 @@ describe("refreshLinearElement", () => {
       Math.abs(connector.x1 - (from.x + from.width / 2)) < 0.01;
 
     expect(leavesRight || leavesDown).toBe(true);
+  });
+
+  it("anchors an elbow on a rotated shape, not on its unrotated box", () => {
+    // A 90-degree-rotated rectangle has a different outline from its stored
+    // box. Computing the anchor in world space put the endpoint on the box, off
+    // the shape; solved in the shape's frame it sits one gap outside the real
+    // outline.
+    const from = createElement("Square", {
+      id: "a",
+      x: 0,
+      y: 0,
+      width: 120,
+      height: 40,
+      angle: Math.PI / 2,
+    })!;
+    const to = createElement("Square", {
+      id: "b",
+      x: 0,
+      y: 400,
+      width: 120,
+      height: 40,
+    })!;
+    const connector = createElement("Arrow", {
+      id: "arrow",
+      x1: 0,
+      y1: 20,
+      x2: 60,
+      y2: 400,
+      edgeStyle: "elbow",
+    })!;
+    const elements = applyBindings([from, to, connector], "arrow", {
+      start: createBinding(from, { x: 0, y: 20 }, 4),
+      end: createBinding(to, { x: 60, y: 400 }, 4),
+    });
+    const arrowEl = arrowOf(elements);
+    const bounds = getElementBounds(from);
+
+    // Distance from the anchor to the shape's own (local) box: exactly the gap.
+    const local = toElementLocal({ x: arrowEl.x1, y: arrowEl.y1 }, from);
+    const outsideX = Math.max(
+      bounds.x - local.x,
+      0,
+      local.x - (bounds.x + bounds.width),
+    );
+    const outsideY = Math.max(
+      bounds.y - local.y,
+      0,
+      local.y - (bounds.y + bounds.height),
+    );
+
+    expect(Math.hypot(outsideX, outsideY)).toBeCloseTo(4, 5);
   });
 
   it("re-routes an elbow when a bound shape moves", () => {

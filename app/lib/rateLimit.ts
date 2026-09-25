@@ -1,3 +1,4 @@
+import type { NextRequest } from "next/server";
 import Redis from "ioredis";
 
 /**
@@ -96,4 +97,15 @@ export async function isAllowedRateLimit(
   }
 
   return checkInMemoryLimit(key, maxRequests, windowSeconds * 1000);
+}
+
+/**
+ * The caller's address as seen through a proxy chain, or "unknown" when the
+ * header is absent. Shared by the routes that cap how often a client can make
+ * the server create rows.
+ */
+export function clientIp(request: NextRequest): string {
+  const forwarded = request.headers.get("x-forwarded-for");
+  const first = forwarded?.split(",")[0]?.trim();
+  return first || "unknown";
 }

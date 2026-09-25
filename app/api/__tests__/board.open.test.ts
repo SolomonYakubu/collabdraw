@@ -17,9 +17,15 @@ vi.hoisted(() => {
 
 vi.mock("pg", () => import("../../lib/__tests__/helpers/fakePg"));
 vi.mock("next/headers", () => import("../../lib/__tests__/helpers/fakeCookies"));
+// Kept real by default; the rate-limit test overrides it for one call.
+vi.mock("../../lib/rateLimit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/rateLimit")>();
+  return { ...actual, isAllowedRateLimit: vi.fn(actual.isAllowedRateLimit) };
+});
 
 import * as cookies from "../../lib/__tests__/helpers/fakeCookies";
 import * as pg from "../../lib/__tests__/helpers/fakePg";
+import * as rateLimit from "../../lib/rateLimit";
 import { POST } from "../boards/[id]/open/route";
 
 const context = (id = "b1") => ({ params: Promise.resolve({ id }) });
@@ -94,6 +100,18 @@ describe("an open it will not record", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ ok: false });
+    expect(pg.queries).toEqual([]);
+  });
+
+  it("rate-limits opens, since each one can create a board row", async () => {
+    // Without this cap, `ensureBoard` below is an unbounded insert that never
+    // touches the create endpoint's own limit.
+    vi.mocked(rateLimit.isAllowedRateLimit).mockResolvedValueOnce(false);
+
+    const response = await POST(open(), context());
+
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ error: "Too many requests." });
     expect(pg.queries).toEqual([]);
   });
 

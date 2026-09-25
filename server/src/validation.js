@@ -26,7 +26,11 @@ const isPlainObject = (value) =>
 
 /**
  * Keep only plain-object shapes, drop oversized entries, and cap the count.
- * Returns null when nothing usable remains.
+ *
+ * Returns null when the input is not an array or when every entry was junk, but
+ * preserves a deliberately empty array as `[]`: a client that undoes its last
+ * shape sends `shapes: []` with `fullUpdate`, and collapsing that to null would
+ * drop the one message that is supposed to clear every peer's canvas.
  */
 const sanitizeShapes = (shapes) => {
   if (!Array.isArray(shapes)) return null;
@@ -44,7 +48,8 @@ const sanitizeShapes = (shapes) => {
     cleaned.push(shape);
   }
 
-  return cleaned.length > 0 ? cleaned : null;
+  if (cleaned.length > 0) return cleaned;
+  return shapes.length === 0 ? [] : null;
 };
 
 /** Cap an array of deleted shape ids to strings of bounded length. */
@@ -52,7 +57,10 @@ const sanitizeDeletedIds = (ids) => {
   if (!Array.isArray(ids)) return null;
   const cleaned = ids
     .filter((id) => typeof id === "string" && id.length <= 128)
-    .slice(0, MAX_SHAPES_PER_UPDATE);
+    // Deletions are ids only, so a bulk clear can name every shape a room holds
+    // — not just the smaller per-update shape cap, which would leave the tail of
+    // a large canvas undeleted on every peer.
+    .slice(0, MAX_SHAPES_PER_ROOM);
   return cleaned.length > 0 ? cleaned : null;
 };
 

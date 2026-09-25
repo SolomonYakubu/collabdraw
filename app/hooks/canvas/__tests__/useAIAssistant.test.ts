@@ -12,6 +12,7 @@
  * automatic turn feeds itself forever.
  */
 import { act, cleanup, renderHook } from "@testing-library/react";
+import { StrictMode, type ComponentType, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AI_WRITE_SETTLE_MS,
@@ -138,7 +139,10 @@ const makeHarness = (initial: readonly Shape[] = [], roomId: string | null = nul
 
 type Harness = ReturnType<typeof makeHarness>;
 
-const setup = (harness: Harness) =>
+const setup = (
+  harness: Harness,
+  options: { wrapper?: ComponentType<{ children: ReactNode }> } = {},
+) =>
   renderHook(
     ({ roomId }: { roomId: string | null }) =>
       useAIAssistant({
@@ -150,7 +154,7 @@ const setup = (harness: Harness) =>
         getViewportCenter: harness.getViewportCenter,
         onDiagramPlaced: harness.onDiagramPlaced,
       }),
-    { initialProps: { roomId: harness.roomId } },
+    { initialProps: { roomId: harness.roomId }, wrapper: options.wrapper },
   );
 
 beforeEach(() => {
@@ -291,6 +295,48 @@ describe("the transcript", () => {
     expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
+  it("stays cleared when a reply from before the reset lands afterwards", async () => {
+    // Clearing mid-turn used to leave the request running; its reply then
+    // re-appended the transcript from the closure it captured before the clear.
+    const { result } = setup(makeHarness());
+    let release: (() => void) | null = null;
+    replies = [
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              release = () => {
+                controller.enqueue(
+                  new TextEncoder().encode(sceneReply([sceneItem("One", 10)])),
+                );
+                controller.close();
+              };
+            },
+          }),
+          { status: 200 },
+        ),
+    ];
+
+    let turn: Promise<void> = Promise.resolve();
+    await act(async () => {
+      turn = result.current.generate({ prompt: "draw one box" });
+      await Promise.resolve();
+    });
+    expect(result.current.isGenerating).toBe(true);
+
+    act(() => result.current.resetConversation());
+    expect(result.current.history).toEqual([]);
+    expect(result.current.isGenerating).toBe(false);
+
+    await act(async () => {
+      release?.();
+      await turn;
+    });
+
+    expect(result.current.history).toEqual([]);
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
   it("carries on when storage refuses to co-operate", () => {
     /*
      * Safari in private mode throws on read *and* on write, including the
@@ -326,6 +372,23 @@ describe("the transcript", () => {
     read.mockRestore();
     write.mockRestore();
     remove.mockRestore();
+  });
+});
+
+describe("running under StrictMode", () => {
+  it("still completes a turn after the development double-mount", async () => {
+    // StrictMode mounts, unmounts and remounts every effect. The unmount latches
+    // the mounted ref off, so unless setup turns it back on, every stream chunk
+    // reads as stale and the turn never finishes.
+    const harness = makeHarness();
+    const { result } = setup(harness, { wrapper: StrictMode });
+    replies = [() => streamOf(sceneReply([sceneItem("One", 10)]))];
+
+    await generate(result, { prompt: "draw one box" });
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.isGenerating).toBe(false);
+    expect(harness.elementsRef.current.length).toBeGreaterThan(0);
   });
 });
 

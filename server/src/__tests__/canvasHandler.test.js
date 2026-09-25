@@ -145,6 +145,30 @@ describe("canvas-update", () => {
     expect(h.roomState.scheduleFlush).toHaveBeenCalledWith("room1", []);
   });
 
+  it("relays a full update that clears the scene, instead of dropping it", () => {
+    // Undo-to-empty and clear both send `shapes: []` with `fullUpdate`. Collapsing
+    // that to "nothing usable" left the shape on every peer and in the store.
+    join(h);
+    h.store.setCanvasState("room1", [shape("a")]);
+
+    h.fire("canvas-update", { roomId: "room1", shapes: [], fullUpdate: true });
+
+    expect(h.store.getCanvasState("room1")).toEqual([]);
+    expect(h.roomState.scheduleFlush).toHaveBeenCalledWith("room1", []);
+    expect(h.sent("canvas-update")).toEqual([
+      {
+        to: "room:room1",
+        event: "canvas-update",
+        payload: {
+          roomId: "room1",
+          shapes: [],
+          deletedShapeIds: null,
+          fullUpdate: true,
+        },
+      },
+    ]);
+  });
+
   it("flushes the whole scene, not just the update that arrived", () => {
     // What gets written is the room's state of the world; an incremental update
     // on its own would overwrite the board with one shape.

@@ -130,8 +130,16 @@ class RoomStore {
    * Merge updates (incremental or full) and deletions into the room state.
    */
   updateCanvasState(roomId, shapes, deletedShapeIds, isFullUpdate = false) {
-    if (shapes && shapes.length > 0) {
-      if (isFullUpdate || !this.roomCanvasStates.has(roomId)) {
+    if (isFullUpdate && Array.isArray(shapes)) {
+      // A full update is authoritative, empty included: this is how a cleared or
+      // fully-undone canvas reaches the store, and skipping it would leave the
+      // shape on every peer and in the durable scene.
+      this.roomCanvasStates.set(
+        roomId,
+        shapes.slice(0, MAX_SHAPES_PER_ROOM),
+      );
+    } else if (shapes && shapes.length > 0) {
+      if (!this.roomCanvasStates.has(roomId)) {
         this.roomCanvasStates.set(roomId, shapes);
       } else {
         const merged = [...this.roomCanvasStates.get(roomId)];

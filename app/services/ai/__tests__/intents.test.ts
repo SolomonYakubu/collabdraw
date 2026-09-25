@@ -174,6 +174,43 @@ describe("parseGridSpec", () => {
     expect(spec.cells[0]).toMatchObject({ row: 2, column: 2, text: "X" });
   });
 
+  it("shifts a whole 1-based grid together, so no row collides with another", () => {
+    // Only correcting the out-of-range index turned rows 3,2,1 into 2,2,1: the
+    // middle row was overwritten and the first cell was never written.
+    const spec = parseGridSpec({
+      rows: 3,
+      columns: 3,
+      cells: [
+        { row: 3, column: 3, text: "bottom-right" },
+        { row: 1, column: 1, text: "top-left" },
+        { row: 2, column: 2, text: "middle" },
+      ],
+    })!;
+
+    expect(spec.cells).toEqual([
+      { row: 2, column: 2, text: "bottom-right", accent: "none" },
+      { row: 0, column: 0, text: "top-left", accent: "none" },
+      { row: 1, column: 1, text: "middle", accent: "none" },
+    ]);
+  });
+
+  it("drops a lone out-of-range index without shifting the rest", () => {
+    // A 0-based grid with one stray row equal to the dimension is a mistake in
+    // one cell, not a signal that the whole reply is 1-based.
+    const spec = parseGridSpec({
+      rows: 3,
+      columns: 3,
+      cells: [
+        { row: 0, column: 0, text: "keep" },
+        { row: 9, column: 1, text: "stray" },
+      ],
+    })!;
+
+    expect(spec.cells).toEqual([
+      { row: 0, column: 0, text: "keep", accent: "none" },
+    ]);
+  });
+
   it("drops out-of-range and duplicate cells", () => {
     const spec = parseGridSpec({
       rows: 2,

@@ -310,6 +310,17 @@ describe("merging an update", () => {
     expect(store.getCanvasState("room1")).toHaveLength(MAX_SHAPES_PER_ROOM);
   });
 
+  it("empties the scene on a full update that carries an empty array", () => {
+    // Undo-to-empty / clear arrives as a full update with `shapes: []`, and it
+    // has to actually replace the scene rather than be skipped as a no-op.
+    store.setCanvasState("room1", [shape("a")]);
+
+    store.updateCanvasState("room1", [], null, true);
+
+    expect(store.hasCanvasState("room1")).toBe(true);
+    expect(store.getCanvasState("room1")).toEqual([]);
+  });
+
   it("leaves the scene alone when an update carries no shapes", () => {
     store.setCanvasState("room1", [shape("a")]);
 

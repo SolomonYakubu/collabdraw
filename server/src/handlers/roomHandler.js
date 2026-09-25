@@ -63,19 +63,31 @@ function registerRoomHandlers(io, socket) {
     console.log(`User ${safeTag} joined room ${roomId}`);
 
     // Hydration fallback chain: local memory -> Redis hot cache -> Postgres
-    // store of record. First non-empty wins; seed the local cache so later
-    // joiners are served without another round-trip.
+    // store of record. The first source that *has* an answer wins — including an
+    // empty one. Treating an empty scene as "no answer" and falling through to
+    // the durable store resurrected shapes a user had just deleted but whose
+    // debounced flush had not landed yet.
     let persistedState = roomStore.hasCanvasState(roomId)
       ? roomStore.getCanvasState(roomId)
-      : await loadCanvasState(roomId);
-    if (!persistedState || persistedState.length === 0) {
+      : undefined;
+    if (persistedState === undefined) {
+      const cached = await loadCanvasState(roomId);
+      if (cached !== null) {
+        persistedState = cached;
+      }
+    }
+    if (persistedState === undefined) {
       const durable = await loadBoardScene(roomId);
       if (durable && durable.length > 0) {
         persistedState = durable;
       }
     }
-    if (persistedState && persistedState.length > 0) {
+    if (Array.isArray(persistedState)) {
+      // Seed the local cache so later joiners are served without another round
+      // trip, and so an authoritative empty scene is not re-investigated.
       roomStore.setCanvasState(roomId, persistedState);
+    }
+    if (persistedState && persistedState.length > 0) {
       socket.emit('canvas-state-sync', {
         roomId,
         userId: 'server',

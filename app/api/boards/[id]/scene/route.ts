@@ -13,6 +13,7 @@ import {
   readViewport,
   withinByteLimit,
 } from "../../../../lib/boardAccess";
+import { clientIp, isAllowedRateLimit } from "../../../../lib/rateLimit";
 import { restoreElements } from "../../../../services/canvas/elements";
 
 type Params = { params: Promise<{ id: string }> };
@@ -39,6 +40,13 @@ export async function PUT(request: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "Invalid board id." }, { status: 400 });
     }
     const deviceId = await getDeviceId();
+
+    // This path can also create the board row (`ensureBoard` below), so it needs
+    // the same cap as the explicit create/open endpoints.
+    const ip = clientIp(request);
+    if (!(await isAllowedRateLimit(`board-scene:${ip}`, 120, 60))) {
+      return NextResponse.json({ error: "Too many requests." }, { status: 429 });
+    }
 
     const raw = await request.text();
     if (!withinByteLimit(raw, MAX_SCENE_BYTES)) {

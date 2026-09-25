@@ -22,12 +22,18 @@ const limiter = vi.hoisted(() => ({ allow: true, calls: [] as unknown[][] }));
 
 vi.mock("pg", () => import("../../lib/__tests__/helpers/fakePg"));
 vi.mock("next/headers", () => import("../../lib/__tests__/helpers/fakeCookies"));
-vi.mock("../../lib/rateLimit", () => ({
-  isAllowedRateLimit: async (...args: unknown[]) => {
-    limiter.calls.push(args);
-    return limiter.allow;
-  },
-}));
+// Only the limiter is stubbed; `clientIp` stays real so the key the route
+// builds from the forwarded header is still what these tests assert on.
+vi.mock("../../lib/rateLimit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/rateLimit")>();
+  return {
+    ...actual,
+    isAllowedRateLimit: async (...args: unknown[]) => {
+      limiter.calls.push(args);
+      return limiter.allow;
+    },
+  };
+});
 
 import * as cookies from "../../lib/__tests__/helpers/fakeCookies";
 import * as pg from "../../lib/__tests__/helpers/fakePg";

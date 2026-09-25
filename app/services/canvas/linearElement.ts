@@ -21,12 +21,14 @@ import {
   type Shape,
 } from "../../types/shapes";
 import {
+  boxCenter,
   clamp,
   diamondPoints,
   exitBoxAlongRay,
   exitEllipseAlongRay,
   intersectSegmentWithPolygon,
   normalizeBox,
+  rotateVector,
   trianglePoints,
 } from "../../utils/geometry";
 import {
@@ -188,6 +190,40 @@ const headingTowards = (from: BoundingBox, target: Point): Heading => {
   return dy >= 0 ? "down" : "up";
 };
 
+/** The world heading nearest a side normal once the shape is rotated. */
+const rotateHeading = (heading: Heading, angle: number): Heading => {
+  if (angle === 0) {
+    return heading;
+  }
+  const normal = rotateVector(HEADING_VECTORS[heading], angle);
+  if (Math.abs(normal.x) >= Math.abs(normal.y)) {
+    return normal.x >= 0 ? "right" : "left";
+  }
+  return normal.y >= 0 ? "down" : "up";
+};
+
+/**
+ * Where an elbow leaves a bound shape, aiming at `towards`.
+ *
+ * Solved in the shape's own frame so a rotated shape is anchored on the side
+ * that actually faces the arrow, then mapped back to the world. Without this the
+ * endpoint landed on the unrotated box, floating off the rotated outline. The
+ * heading is the nearest world axis to the rotated outward normal, because the
+ * orthogonal router can only leave along an axis.
+ */
+const getElbowEnd = (
+  element: Shape,
+  towards: Point,
+  gap: number,
+): { point: Point; heading: Heading } => {
+  const bounds = getElementBounds(element);
+  const localHeading = headingTowards(bounds, toElementLocal(towards, element));
+  return {
+    point: fromElementLocal(getSideAnchor(bounds, localHeading, gap), element),
+    heading: rotateHeading(localHeading, element.angle),
+  };
+};
+
 interface ResolvedEnds {
   start: Point;
   end: Point;
@@ -261,23 +297,6 @@ const resolveEnds = (
   const startBox = startElement ? getElementBounds(startElement) : null;
   const endBox = endElement ? getElementBounds(endElement) : null;
 
-  let startHeading: Heading | null = null;
-  let endHeading: Heading | null = null;
-
-  if (startBox && endBox && waypoints.length === 0) {
-    // Both ends bound: pick the pair of sides that face each other.
-    const facing = getFacingHeadings(startBox, endBox);
-    startHeading = facing.start;
-    endHeading = facing.end;
-  } else {
-    if (startBox) {
-      startHeading = headingTowards(startBox, startLooksAt);
-    }
-    if (endBox) {
-      endHeading = headingTowards(endBox, endLooksAt);
-    }
-  }
-
   const startGap = Math.max(
     element.startBinding?.gap ?? MIN_BINDING_GAP,
     MIN_BINDING_GAP,
@@ -287,17 +306,48 @@ const resolveEnds = (
     MIN_BINDING_GAP,
   );
 
-  return {
-    start:
-      startBox && startHeading
-        ? getSideAnchor(startBox, startHeading, startGap)
-        : rawStart,
-    end:
-      endBox && endHeading ? getSideAnchor(endBox, endHeading, endGap) : rawEnd,
-    startHeading,
-    endHeading,
-    obstacles,
-  };
+  let start = rawStart;
+  let end = rawEnd;
+  let startHeading: Heading | null = null;
+  let endHeading: Heading | null = null;
+
+  if (startBox && endBox && waypoints.length === 0) {
+    if (
+      startElement &&
+      endElement &&
+      (startElement.angle !== 0 || endElement.angle !== 0)
+    ) {
+      // A rotated shape is not axis-aligned, so the unrotated facing heuristic
+      // would anchor on a box that is not the one on screen. Solve each end in
+      // its own frame instead.
+      const resolvedStart = getElbowEnd(startElement, boxCenter(endBox), startGap);
+      const resolvedEnd = getElbowEnd(endElement, boxCenter(startBox), endGap);
+      start = resolvedStart.point;
+      end = resolvedEnd.point;
+      startHeading = resolvedStart.heading;
+      endHeading = resolvedEnd.heading;
+    } else {
+      // Both ends bound: pick the pair of sides that face each other.
+      const facing = getFacingHeadings(startBox, endBox);
+      startHeading = facing.start;
+      endHeading = facing.end;
+      start = getSideAnchor(startBox, startHeading, startGap);
+      end = getSideAnchor(endBox, endHeading, endGap);
+    }
+  } else {
+    if (startBox && startElement) {
+      const resolved = getElbowEnd(startElement, startLooksAt, startGap);
+      start = resolved.point;
+      startHeading = resolved.heading;
+    }
+    if (endBox && endElement) {
+      const resolved = getElbowEnd(endElement, endLooksAt, endGap);
+      end = resolved.point;
+      endHeading = resolved.heading;
+    }
+  }
+
+  return { start, end, startHeading, endHeading, obstacles };
 };
 
 /**

@@ -13,6 +13,7 @@ import {
   isValidBoardId,
   withinByteLimit,
 } from "../../../../lib/boardAccess";
+import { clientIp, isAllowedRateLimit } from "../../../../lib/rateLimit";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -50,6 +51,12 @@ export async function PUT(request: NextRequest, { params }: Params) {
       return NextResponse.json({ error: "Invalid board id." }, { status: 400 });
     }
     const deviceId = await getDeviceId();
+
+    // Like the scene save, this can create the board row on the way through.
+    const ip = clientIp(request);
+    if (!(await isAllowedRateLimit(`board-thumbnail:${ip}`, 120, 60))) {
+      return NextResponse.json({ error: "Too many requests." }, { status: 429 });
+    }
 
     const body = await request.json().catch(() => null);
     const dataUrl = typeof body?.dataUrl === "string" ? body.dataUrl : "";

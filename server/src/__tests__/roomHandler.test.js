@@ -208,6 +208,19 @@ describe("what a joiner is shown", () => {
     expect(h.roomState.loadBoardScene).not.toHaveBeenCalled();
   });
 
+  it("trusts an empty in-memory scene over a stale durable one", async () => {
+    // The scene was cleared a moment ago and the debounced flush has not landed
+    // yet. The durable copy is older, and reading it back undoes the deletion.
+    rebuild({ loadBoardScene: vi.fn(async () => [shape("a")]) });
+    h.store.setCanvasState("room1", []);
+
+    await join(h, validJoin);
+
+    expect(h.roomState.loadCanvasState).not.toHaveBeenCalled();
+    expect(h.roomState.loadBoardScene).not.toHaveBeenCalled();
+    expect(h.sent("canvas-state-sync")).toEqual([]);
+  });
+
   it("reads the board out of Postgres when neither cache has it", async () => {
     rebuild({ loadBoardScene: vi.fn(async () => [shape("a")]) });
 
@@ -218,9 +231,10 @@ describe("what a joiner is shown", () => {
     expect(h.store.getCanvasState("room1")).toEqual([shape("a")]);
   });
 
-  it("treats an empty answer as no answer", async () => {
-    // An empty array is what a room that was created and never drawn in returns;
-    // stopping there would hide a board that Postgres does have.
+  it("treats an empty cache as the answer, and does not go on to Postgres", async () => {
+    // A cache entry that exists but is empty is authoritative: the scene was
+    // cleared, and the flush that would update Postgres may not have landed yet.
+    // Falling through here is what resurrected a just-deleted drawing.
     rebuild({
       loadCanvasState: vi.fn(async () => []),
       loadBoardScene: vi.fn(async () => [shape("a")]),
@@ -228,8 +242,10 @@ describe("what a joiner is shown", () => {
 
     await join(h, validJoin);
 
-    expect(h.roomState.loadBoardScene).toHaveBeenCalledWith("room1");
-    expect(h.sent("canvas-state-sync")[0].payload.shapes).toEqual([shape("a")]);
+    expect(h.roomState.loadBoardScene).not.toHaveBeenCalled();
+    expect(h.sent("canvas-state-sync")).toEqual([]);
+    // The empty answer is cached too, so the next joiner is not re-investigated.
+    expect(h.store.getCanvasState("room1")).toEqual([]);
   });
 });
 describe("asking a peer, when nothing is stored anywhere", () => {

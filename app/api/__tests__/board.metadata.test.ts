@@ -36,9 +36,18 @@ const patch = (body: unknown) =>
 const del = () =>
   new NextRequest("http://localhost/api/boards/b1", { method: "DELETE" });
 
-/** The board `getBoard` will find, or nothing at all. */
+/**
+ * The board `getBoard` will find, or nothing at all.
+ *
+ * Two row sets are queued: the first answer is the `authorize` read, the second
+ * the ownership claim (which returns a row of its own on success). Boards that
+ * are already owned never reach the claim, so its answer goes unused there.
+ */
 const boardOwnedBy = (owner: string | null) =>
-  pg.answerWith([{ id: "b1", owner_device_id: owner }]);
+  pg.answerWith(
+    [{ id: "b1", owner_device_id: owner }],
+    [{ id: "b1", owner_device_id: owner }],
+  );
 const noBoard = () => pg.answerWith([]);
 
 beforeEach(() => {
@@ -154,6 +163,22 @@ describe("renaming a board", () => {
       expect(claim.params[2]).toEqual(["", "server", "anonymous"]);
       expect(pg.flatten(pg.queries[2].text)).toContain("set title = $2");
     }
+  });
+
+  it("refuses a claim that lost the race, instead of renaming anyway", async () => {
+    // The board read as unclaimed, but by the time we tried to take it another
+    // device had. Writing the title anyway would rename somebody else's board.
+    pg.answerWith(
+      [{ id: "b1", owner_device_id: "server" }],
+      [],
+      [{ id: "b1", owner_device_id: "device-z" }],
+    );
+
+    const response = await PATCH(patch({ title: "mine now" }), context());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "Forbidden." });
+    expect(pg.sql().some((text) => text.includes("set title"))).toBe(false);
   });
 
   it("does not re-claim a board it already owns", async () => {

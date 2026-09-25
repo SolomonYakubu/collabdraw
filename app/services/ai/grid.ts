@@ -80,6 +80,24 @@ export const parseGridSpec = (input: unknown): GridSpec | null => {
   const style: GridStyle = raw.style === "table" ? "table" : "board";
   const rawCells = Array.isArray(raw.cells) ? raw.cells : [];
 
+  const parsedIndices = rawCells
+    .filter((candidate) => candidate && typeof candidate === "object")
+    .map((candidate) => {
+      const cell = candidate as Record<string, unknown>;
+      return { row: asInt(cell.row), column: asInt(cell.column) };
+    });
+
+  // Accept both 0-based and 1-based indices. A 1-based reply offsets *every*
+  // index, so the axis is read as a whole: an index landing exactly on the
+  // dimension means the set is 1-based, and all of it shifts together. Shifting
+  // only the out-of-range one collided it with the index below (a 3x3 reply of
+  // rows 3,2,1 became 2,2,1), silently losing a row. An index beyond the
+  // dimension is just out of range and is dropped without moving the rest.
+  const rowShift = parsedIndices.some((index) => index.row === rows) ? 1 : 0;
+  const columnShift = parsedIndices.some((index) => index.column === columns)
+    ? 1
+    : 0;
+
   const cells: GridCell[] = [];
   const occupied = new Set<string>();
 
@@ -92,11 +110,9 @@ export const parseGridSpec = (input: unknown): GridSpec | null => {
     const row = asInt(cell.row);
     const column = asInt(cell.column);
 
-    // Accept both 0-based and 1-based indices: models mix them freely, and a
-    // grid is small enough that the intent is unambiguous either way.
-    const normalisedRow = row === null ? null : row >= rows ? row - 1 : row;
+    const normalisedRow = row === null ? null : row - rowShift;
     const normalisedColumn =
-      column === null ? null : column >= columns ? column - 1 : column;
+      column === null ? null : column - columnShift;
 
     if (
       normalisedRow === null ||

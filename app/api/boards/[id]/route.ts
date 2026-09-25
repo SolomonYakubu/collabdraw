@@ -36,7 +36,17 @@ async function authorize(
     return NextResponse.json({ error: "Forbidden." }, { status: 403 });
   }
   if (isUnclaimedOwner(board.owner_device_id)) {
-    await claimBoard(id, deviceId);
+    const claimed = await claimBoard(id, deviceId);
+    if (!claimed) {
+      // Another device claimed the board between our read and our write, so the
+      // board we authorized no longer exists in that state. Re-read before
+      // writing, or the loser of the race still renames/deletes the winner's
+      // board.
+      const fresh = await getBoard(id);
+      if (!fresh || !mayWriteBoardMetadata(fresh.owner_device_id, deviceId)) {
+        return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+      }
+    }
   }
   return null;
 }
