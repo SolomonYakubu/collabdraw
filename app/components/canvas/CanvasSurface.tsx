@@ -9,8 +9,12 @@
  *    highlights, the marquee and the eraser trail. Repainting it costs nothing,
  *    so hover and selection feedback never re-generate element geometry.
  *
- * Both repaint inside one requestAnimationFrame, so a burst of pointer events
- * results in a single frame of work.
+ * Each layer has its own effect and its own requestAnimationFrame, depending
+ * only on its own inputs. They were once one effect whose dependency array was
+ * the union of both layers', so an interactive-only change (a hover, a marquee
+ * frame, an eraser point) re-ran the whole static repaint — the exact cost the
+ * two layers exist to avoid. A burst of events on one layer still coalesces into
+ * a single frame for that layer.
  */
 import { useEffect, useRef } from "react";
 import rough from "roughjs";
@@ -118,7 +122,8 @@ const CanvasSurface: React.FC<CanvasSurfaceProps> = ({
 }) => {
   const staticCanvasRef = useRef<HTMLCanvasElement>(null);
   const roughCanvasRef = useRef<RoughCanvas | null>(null);
-  const frameRef = useRef<number | null>(null);
+  const staticFrameRef = useRef<number | null>(null);
+  const interactiveFrameRef = useRef<number | null>(null);
 
   useCanvasBacking(staticCanvasRef, size, devicePixelRatio);
   useCanvasBacking(interactiveCanvasRef, size, devicePixelRatio);
@@ -130,22 +135,21 @@ const CanvasSurface: React.FC<CanvasSurfaceProps> = ({
     }
   }, []);
 
-  // One rAF paints both layers, so a burst of pointer events costs one frame.
+  // The element layer: repaints only when the scene, the viewport or the canvas
+  // size changes — never for hover or selection feedback.
   useEffect(() => {
-    if (frameRef.current !== null) {
-      cancelAnimationFrame(frameRef.current);
+    if (staticFrameRef.current !== null) {
+      cancelAnimationFrame(staticFrameRef.current);
     }
 
-    frameRef.current = requestAnimationFrame(() => {
-      frameRef.current = null;
+    staticFrameRef.current = requestAnimationFrame(() => {
+      staticFrameRef.current = null;
 
-      const staticCanvas = staticCanvasRef.current;
-      const interactiveCanvas = interactiveCanvasRef.current;
+      const canvas = staticCanvasRef.current;
       const roughCanvas = roughCanvasRef.current;
-
-      if (staticCanvas && roughCanvas) {
+      if (canvas && roughCanvas) {
         renderStaticScene({
-          canvas: staticCanvas,
+          canvas,
           roughCanvas,
           elements,
           viewport,
@@ -154,10 +158,38 @@ const CanvasSurface: React.FC<CanvasSurfaceProps> = ({
           pendingElement,
         });
       }
+    });
 
-      if (interactiveCanvas) {
+    return () => {
+      if (staticFrameRef.current !== null) {
+        cancelAnimationFrame(staticFrameRef.current);
+        staticFrameRef.current = null;
+      }
+    };
+  }, [
+    devicePixelRatio,
+    elements,
+    erasingIds,
+    pendingElement,
+    size.height,
+    size.width,
+    viewport,
+  ]);
+
+  // The overlay: selection, handles, guides, the marquee and the eraser trail.
+  // Its own frame, so a burst of pointer events costs one overlay repaint.
+  useEffect(() => {
+    if (interactiveFrameRef.current !== null) {
+      cancelAnimationFrame(interactiveFrameRef.current);
+    }
+
+    interactiveFrameRef.current = requestAnimationFrame(() => {
+      interactiveFrameRef.current = null;
+
+      const canvas = interactiveCanvasRef.current;
+      if (canvas) {
         renderInteractiveScene({
-          canvas: interactiveCanvas,
+          canvas,
           viewport,
           devicePixelRatio,
           selectedElements,
@@ -175,9 +207,9 @@ const CanvasSurface: React.FC<CanvasSurfaceProps> = ({
     });
 
     return () => {
-      if (frameRef.current !== null) {
-        cancelAnimationFrame(frameRef.current);
-        frameRef.current = null;
+      if (interactiveFrameRef.current !== null) {
+        cancelAnimationFrame(interactiveFrameRef.current);
+        interactiveFrameRef.current = null;
       }
     };
   }, [
@@ -185,13 +217,10 @@ const CanvasSurface: React.FC<CanvasSurfaceProps> = ({
     alignmentGuides,
     bindingHighlightElement,
     devicePixelRatio,
-    elements,
     eraserTrail,
-    erasingIds,
     interactiveCanvasRef,
     isTransforming,
     marquee,
-    pendingElement,
     selectedElements,
     selectionBounds,
     showHandles,

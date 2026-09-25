@@ -364,6 +364,34 @@ describe("which layer gets what", () => {
     expect(overlay.isTransforming).toBe(true);
   });
 
+  it("repaints the overlay alone when only overlay state changes", () => {
+    // A hover, a marquee frame or an eraser point used to re-run the whole
+    // static repaint because one effect depended on both layers' inputs.
+    const { update } = draw({ elements: [box("a")] });
+    runFrames();
+    staticCalls.mockClear();
+    interactiveCalls.mockClear();
+
+    update({ marquee: { x: 0, y: 0, width: 5, height: 5 } });
+    runFrames();
+
+    expect(staticCalls).not.toHaveBeenCalled();
+    expect(interactiveCalls).toHaveBeenCalledTimes(1);
+  });
+
+  it("repaints the elements alone when only the scene changes", () => {
+    const { update } = draw({ elements: [box("a")] });
+    runFrames();
+    staticCalls.mockClear();
+    interactiveCalls.mockClear();
+
+    update({ elements: [box("a"), box("b")] });
+    runFrames();
+
+    expect(staticCalls).toHaveBeenCalledTimes(1);
+    expect(interactiveCalls).not.toHaveBeenCalled();
+  });
+
   it("paints each layer onto its own canvas", () => {
     const { canvases } = draw();
 
