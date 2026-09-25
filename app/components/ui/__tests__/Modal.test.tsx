@@ -160,6 +160,54 @@ describe("focus", () => {
 
     expect(document.activeElement).toBe(opener);
   });
+
+  it("keeps Tab inside the dialog instead of onto the page behind", () => {
+    // The portal is a sibling of the app, so the browser's Tab order walks off
+    // the last control and onto the toolbar behind the overlay (WCAG 2.4.3).
+    render(<button type="button">Behind</button>);
+    show({
+      footer: (
+        <>
+          <button type="button">Cancel</button>
+          <button type="button">Leave</button>
+        </>
+      ),
+    });
+
+    const leave = screen.getByRole("button", { name: "Leave" });
+    leave.focus();
+
+    fireEvent.keyDown(leave, { key: "Tab" });
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Cancel" }),
+    );
+  });
+
+  it("wraps Shift+Tab back from the first control, and from the dialog itself", () => {
+    render(<button type="button">Behind</button>);
+    show({
+      footer: (
+        <>
+          <button type="button">Cancel</button>
+          <button type="button">Leave</button>
+        </>
+      ),
+    });
+    const dialog = screen.getByRole("dialog");
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    const leave = screen.getByRole("button", { name: "Leave" });
+
+    cancel.focus();
+    fireEvent.keyDown(cancel, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(leave);
+
+    // The dialog itself is focused on open, and it is not one of its own
+    // focusables: without the edge check this walks backwards out of the portal.
+    dialog.focus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(leave);
+  });
 });
 
 describe("the keyboard", () => {

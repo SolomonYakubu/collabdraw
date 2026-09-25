@@ -17,6 +17,10 @@
  *    Delete would still remove the selection. A capture-phase listener swallows
  *    keys unless they are being typed into a field inside the dialog, which
  *    leaves the input working while the canvas below stays inert.
+ *  - **Focus stays in.** The dialog is a portal sibling of the app, so the
+ *    browser's Tab order walks straight off the end of it and onto the controls
+ *    behind the overlay. The same listener wraps Tab and Shift+Tab between the
+ *    dialog's first and last focusable elements.
  */
 import { useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
@@ -40,6 +44,19 @@ const isTypingTarget = (target: EventTarget | null): boolean =>
   (target.tagName === "INPUT" ||
     target.tagName === "TEXTAREA" ||
     target.isContentEditable);
+
+/** Everything Tab can land on inside the dialog, in DOM order. */
+const TABBABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
+
+const tabbablesIn = (root: HTMLElement): HTMLElement[] =>
+  Array.from(root.querySelectorAll<HTMLElement>(TABBABLE_SELECTOR));
 
 const Modal: React.FC<ModalProps> = ({
   open,
@@ -74,10 +91,40 @@ const Modal: React.FC<ModalProps> = ({
         onClose();
         return;
       }
-      // Tab keeps working (focus stays in the dialog because it is the only
-      // thing on top), and typing reaches the field. Nothing else gets through
-      // to the canvas.
-      if (event.key !== "Tab" && !isTypingTarget(event.target)) {
+
+      if (event.key === "Tab") {
+        const dialog = dialogRef.current;
+        if (!dialog) {
+          return;
+        }
+
+        const focusables = tabbablesIn(dialog);
+        if (focusables.length === 0) {
+          event.preventDefault();
+          dialog.focus();
+          return;
+        }
+
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement as HTMLElement | null;
+        // Focus on the dialog itself (its initial state) is not one of the
+        // focusables, so a Shift+Tab from there would walk backwards out of the
+        // portal. Treat it as the edge it is.
+        const atEdge = !active || active === dialog || !dialog.contains(active);
+
+        if (event.shiftKey ? atEdge || active === first : atEdge || active === last) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus();
+        }
+        // Tab itself still propagates, so a host listening for it (as the
+        // keyboard-shortcut tests do) keeps seeing it; only the default move is
+        // replaced.
+        return;
+      }
+
+      // Typing reaches the field; nothing else gets through to the canvas.
+      if (!isTypingTarget(event.target)) {
         event.stopPropagation();
       }
     };
