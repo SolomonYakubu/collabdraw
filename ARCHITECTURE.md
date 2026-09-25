@@ -775,11 +775,14 @@ instead of stopping at the first red, because four verdicts from one push beats
 discovering the next failure after each fix. Nothing needs a secret: every
 variable the app reads has a fallback, so the build runs with none at all — which
 also stops a missing key from quietly becoming a build-time dependency — and a
-fork's pull request gets the same answer as a branch. A last step installs
-`server/package-lock.json` from inside `server/`, the way that deploy does,
-because nothing else exercises it: the tests under `server/src/__tests__` run off
-the root install, which carries every server dependency, and the server's own
-lockfile had drifted to the point of missing `pg` altogether.
+fork's pull request gets the same answer as a branch. A last step installs the
+`server/` workspace on its own — `npm ci --workspace collabdraw-server` — the way
+that deploy does, because nothing else exercises it: the tests under
+`server/src/__tests__` run off the root install, which carries every server
+dependency. `server/` used to keep a second lockfile for that deploy, and it had
+drifted to the point of missing `pg` altogether; it is an npm workspace now, so
+there is one root lockfile and that step proves the server's manifest still
+resolves without the root app's dependencies.
 
 A second job is the only place `migrations/001_boards.sql` has ever run from
 scratch. Against a throwaway Postgres service container it applies the

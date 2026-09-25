@@ -48,11 +48,18 @@ npm install
 npm start
 ```
 
+`server/` is an npm workspace of the repository root, so there is a single
+`package-lock.json` at the root. Running `npm install` or `npm ci` from inside
+`server/` still works: npm finds the workspace root and resolves this package
+against the root lockfile.
+
 ## Deployment (Render / Railway / Fly.io)
 
 When deploying this server independently:
 
 - **Root Directory:** `server` (or repository root with start command `node server/src/index.js`)
-- **Build Command:** `npm install`
+- **Build Command:** `npm install` (npm resolves the workspace above `server/`
+  and installs from the root lockfile; `npm ci --workspace collabdraw-server`
+  from the repository root does the same and is what CI checks)
 - **Start Command:** `npm start` (or `node src/index.js`)
 - Set `CLIENT_ORIGIN` to your Vercel deployment URL.

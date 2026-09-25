@@ -35,10 +35,8 @@ jobs:
           # app is deployed on.
           node-version: 22
           cache: npm
-          # The socket server keeps its own lockfile for its own deploy.
-          cache-dependency-path: |
-            package-lock.json
-            server/package-lock.json
+          # One lockfile: `server/` is an npm workspace, installed from here.
+          cache-dependency-path: package-lock.json
 
       - run: npm ci
 
@@ -65,14 +63,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run build
 
-      # The socket server deploys on its own from `server/`, so its lockfile has
-      # to be installable there. Nothing else exercises it — the tests under
-      # `server/src/__tests__` run off the root install, which carries every
-      # server dependency — which is how that lockfile came to be missing `pg`.
-      - name: Install the socket server's own lockfile
+      # The socket server still deploys on its own from `server/`. It has no
+      # lockfile of its own any more — it is a workspace, resolved by the root
+      # one — so this installs just that workspace the way its deploy does and
+      # proves its manifest still resolves without the root app's dependencies.
+      # This replaces the step that used to `npm ci` in `server/` against a
+      # second lockfile, the one that had gone missing `pg`.
+      - name: Install the socket server workspace as its deploy would
         if: ${{ !cancelled() }}
-        working-directory: server
-        run: npm ci
+        run: npm ci --workspace collabdraw-server
 
   database:
     name: Migrations
