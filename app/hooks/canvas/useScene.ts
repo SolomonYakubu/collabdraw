@@ -33,6 +33,16 @@ export interface ApplyOptions {
   changedIds?: readonly string[];
   /** Ids that were removed, so peers can delete them too. */
   deletedIds?: readonly string[];
+  /**
+   * Whether this change is a mid-gesture preview rather than settled state.
+   *
+   * A drag re-applies on every pointer move, so most of what it produces is a
+   * position that the next move — or the commit on release — supersedes. Peers
+   * are told on a droppable channel instead of the reliable one, which stops a
+   * backed-up link from queuing stale positions ahead of live ones. Only
+   * `broadcast: "elements"` may be transient; a full scene is never a preview.
+   */
+  transient?: boolean;
   /** Drop bindings whose targets have gone. Default true. */
   reconcileBindings?: boolean;
 }
@@ -42,6 +52,8 @@ export interface SceneBroadcast {
   changed: Shape[];
   deletedIds: string[];
   mode: "none" | "full" | "elements";
+  /** Whether this is a droppable mid-gesture preview. See `ApplyOptions`. */
+  transient: boolean;
 }
 
 export interface UseSceneOptions {
@@ -126,6 +138,7 @@ export const useScene = ({
         changedIds,
         deletedIds = [],
         reconcileBindings = true,
+        transient = false,
       } = options;
 
       const previous = elementsRef.current;
@@ -179,7 +192,15 @@ export const useScene = ({
           removed = [];
         }
 
-        emit({ elements: next, changed, deletedIds: removed, mode: broadcast });
+        emit({
+          elements: next,
+          changed,
+          deletedIds: removed,
+          mode: broadcast,
+          // A full scene supersedes everything, so it is never a preview even if
+          // a caller passed the flag.
+          transient: transient === true && broadcast === "elements",
+        });
       }
 
       return next;
@@ -203,6 +224,7 @@ export const useScene = ({
         changed: snapshot,
         deletedIds: [],
         mode: "full",
+        transient: false,
       });
     },
     [write],

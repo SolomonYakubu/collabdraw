@@ -59,7 +59,10 @@ export const createHarness = ({
   delete nodeRequire.cache[HANDLER_PATHS[handler]];
   const register = nodeRequire(HANDLER_PATHS[handler]);
 
-  /** Everything the server sent, in order: `{ to, event, payload }`. */
+  /**
+   * Everything the server sent, in order: `{ to, event, payload }`, plus
+   * `volatile: true` when it went out on the droppable path.
+   */
   const emitted = [];
   const listeners = new Map();
 
@@ -73,9 +76,14 @@ export const createHarness = ({
    */
   let clusterSockets = null;
 
-  const record = (to) => ({
-    emit: (event, payload) => emitted.push({ to, event, payload }),
-  });
+  const record = (to) => {
+    const push = (volatile) => (event, payload) => {
+      const entry = { to, event, payload };
+      if (volatile) entry.volatile = true;
+      emitted.push(entry);
+    };
+    return { emit: push(false), volatile: { emit: push(true) } };
+  };
 
   const socket = {
     id: socketId,

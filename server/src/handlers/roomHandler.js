@@ -5,21 +5,33 @@ const { clampTag, isValidRoomId } = require('../validation');
 /**
  * Fetch all users across a cluster using the Redis-backed adapter if available,
  * falling back to the local instance memory store.
+ *
+ * Ordered by when each user joined, because the client reads the first entry as
+ * the room's host — the person a newcomer's view is centred on. A cluster
+ * `fetchSockets()` returns sockets in no particular order, so the join time is
+ * what makes "first in the room" mean the same thing on every instance. A user
+ * with several tabs is folded to their earliest socket.
  */
 async function getClusterRoomUsers(io, roomId) {
   try {
     const sockets = await io.in(roomId).fetchSockets();
-    const userMap = new Map();
+    const byUser = new Map();
     for (const s of sockets) {
-      if (s.data && s.data.userId) {
-        userMap.set(s.data.userId, {
+      if (!s.data || !s.data.userId) continue;
+      const joinedAt = Number(s.data.joinedAt) || 0;
+      const existing = byUser.get(s.data.userId);
+      if (!existing || joinedAt < existing.joinedAt) {
+        byUser.set(s.data.userId, {
           id: s.data.userId,
           tag: s.data.userTag || "Anonymous",
+          joinedAt,
         });
       }
     }
-    if (userMap.size > 0) {
-      return Array.from(userMap.values());
+    if (byUser.size > 0) {
+      return Array.from(byUser.values())
+        .sort((a, b) => a.joinedAt - b.joinedAt)
+        .map(({ id, tag }) => ({ id, tag }));
     }
   } catch {
     // Adapter fallback
@@ -43,6 +55,11 @@ function registerRoomHandlers(io, socket) {
     socket.data.userId = userId;
     socket.data.userTag = safeTag;
     socket.data.roomId = roomId;
+    // The cluster-wide ordering behind "who is the host" — see
+    // `getClusterRoomUsers`. Date.now is enough; a same-millisecond tie is
+    // broken by the stable sort, and nothing depends on which of two
+    // simultaneous joins is the host for more than one frame.
+    socket.data.joinedAt = Date.now();
 
     // Leave any previously joined room so a socket belongs to exactly one.
     const previousRoom = roomStore.userRooms.get(socket.id);

@@ -48,6 +48,17 @@ export const PENDING_THROTTLE_MS = 40;
 const STALE_CURSOR_MS = 10_000;
 
 /**
+ * Socket.IO reconnection attempts against one server before the client rotates
+ * to the next one. Kept short so a dead host is abandoned in a few seconds; the
+ * loop alternates between the configured servers, so an outage longer than one
+ * server's attempts is still covered. A deployment with a single URL keeps the
+ * historical, longer retry instead — there is nothing to fail over to.
+ */
+const FAILOVER_RECONNECT_ATTEMPTS = 3;
+const FAILOVER_RECONNECT_DELAY_MS = 500;
+const FAILOVER_RECONNECT_DELAY_MAX_MS = 2000;
+
+/**
  * How long a burst of incremental element updates is folded into one message.
  *
  * A drag applies its transform on every pointer move, and a pointing device
@@ -58,6 +69,18 @@ const STALE_CURSOR_MS = 10_000;
  * until the window closes, and what is flushed is the latest state per element.
  */
 export const ELEMENT_COALESCE_MS = 33;
+
+/**
+ * How long a burst of mid-gesture previews is folded into one message.
+ *
+ * The same shape of problem as the cursor: a drag applies on every pointer move,
+ * but a position that has already been superseded is worth less than the message
+ * behind it. So previews travel volatile — dropped rather than queued when the
+ * link backs up — and the window is a frame at 60Hz rather than the committed
+ * `ELEMENT_COALESCE_MS`, because a preview a frame late is the lag this channel
+ * exists to remove and a dropped one costs only smoothness.
+ */
+export const TRANSIENT_COALESCE_MS = 16;
 
 /**
  * Full freehand snapshots between incremental ones. A delta dropped by a volatile
@@ -106,6 +129,12 @@ export interface CollaborationEventHandlers {
   onDeletions?: (ids: string[]) => void;
   /** Called when a peer asks for the current scene. */
   getScene?: () => Shape[];
+  /**
+   * The host's pointer, delivered once to somebody who has just joined, so the
+   * editor can centre its view on it. Called at most once per session, and only
+   * for a client that joined an already-occupied room.
+   */
+  onHostCursor?: (point: Point) => void;
 }
 
 interface CollaborationContextValue {
@@ -140,6 +169,12 @@ interface CollaborationContextValue {
   sendCursor: (point: Point) => void;
   sendScene: (elements: Shape[]) => void;
   sendElements: (elements: Shape[]) => void;
+  /**
+   * A mid-gesture movement preview: relayed droppable, so a backed-up peer
+   * drops it rather than queueing it ahead of live messages. The commit on
+   * release goes through `sendElements`, which settles the element for good.
+   */
+  sendTransientElements: (elements: Shape[]) => void;
   sendDeletions: (ids: string[]) => void;
   sendPendingElement: (element: Shape | null) => void;
   setEventHandlers: (handlers: CollaborationEventHandlers) => void;
@@ -188,6 +223,25 @@ export const CollaborationContextProvider: React.FC<{
   const [scenePersistence, setScenePersistence] =
     useState<ScenePersistence>(PERSISTENCE_UNKNOWN);
 
+  /*
+   * The socket servers to try, primary first. The backup is optional; with one
+   * URL the client behaves exactly as before and just retries it. Read here
+   * rather than at module load so a test (or a rebuilt env) is not stuck with
+   * whatever was present when the bundle was first evaluated.
+   *
+   * `NEXT_PUBLIC_*` is inlined at build time, so both must be set for the
+   * deployment that serves this bundle — not only on the socket servers.
+   */
+  const socketUrls = useMemo(() => {
+    const primary =
+      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
+    const backup = process.env.NEXT_PUBLIC_SOCKET_URL_BACKUP || "";
+    return Array.from(new Set([primary, backup].filter(Boolean)));
+  }, []);
+  /** Which of `socketUrls` is in use; a failed server advances it. */
+  const [socketUrlIndex, setSocketUrlIndex] = useState(0);
+  const socketUrl = socketUrls[socketUrlIndex % socketUrls.length];
+
   const identityRef = useRef<{
     roomId: string;
     userId: string;
@@ -208,12 +262,34 @@ export const CollaborationContextProvider: React.FC<{
   /** Incremental updates waiting to be folded into one `canvas-update`. */
   const pendingElementsRef = useRef(new Map<string, Shape>());
   const elementTimerRef = useRef<number | null>(null);
+  /**
+   * Mid-gesture movement previews waiting to be folded into one volatile
+   * `canvas-update`. Kept apart from `pendingElementsRef` so a queued preview can
+   * never be flushed onto the reliable path, or a committed element onto the
+   * droppable one.
+   */
+  const pendingTransientRef = useRef(new Map<string, Shape>());
+  const transientTimerRef = useRef<number | null>(null);
   /** Where the last in-progress freehand send stopped, per stroke. */
   const lastPendingPointsRef = useRef<{
     id: string;
     sentPoints: number;
     deltas: number;
   } | null>(null);
+  /**
+   * Your own latest pointer, in world coordinates, kept even when the throttle
+   * swallows a send: it is what the room's host re-announces when somebody
+   * joins, and the last known position is the right one for that.
+   */
+  const lastCursorRef = useRef<Point | null>(null);
+  /** The ids seen in the roster, so a join can be told from a rename. */
+  const knownUserIdsRef = useRef<Set<string>>(new Set());
+  /** The host this client joined behind, while waiting for their pointer. */
+  const pendingHostIdRef = useRef<string | null>(null);
+  /** Whether the one-time centring on the host has already happened. */
+  const hostCentredRef = useRef(false);
+  /** Everyone's latest pointer, so a late roster can still find the host's. */
+  const cursorByUserRef = useRef<Record<string, Point>>({});
 
   /** Never called during SSR — every caller is inside an effect or a handler. */
   const currentUserName = useCallback((): string => {
@@ -252,9 +328,31 @@ export const CollaborationContextProvider: React.FC<{
         elementTimerRef.current = null;
       }
       pendingElementsRef.current.clear();
+      if (transientTimerRef.current !== null) {
+        window.clearTimeout(transientTimerRef.current);
+        transientTimerRef.current = null;
+      }
+      pendingTransientRef.current.clear();
     },
     [],
   );
+
+  /*
+   * A new room is a new join: the roster has not been seen, there is nobody to
+   * follow yet, and the one-time centring is available again. The stored cursor
+   * is from the board being left, so it is not a position to announce.
+   *
+   * Keyed on the room, not on the socket, so a failover to the other server
+   * does not re-run the join handshake — the host has not changed and the view
+   * must not jump again.
+   */
+  useEffect(() => {
+    knownUserIdsRef.current = new Set();
+    pendingHostIdRef.current = null;
+    hostCentredRef.current = false;
+    cursorByUserRef.current = {};
+    lastCursorRef.current = null;
+  }, [roomIdProp]);
 
   useEffect(() => {
     if (!isClient || !roomIdProp) {
@@ -273,18 +371,37 @@ export const CollaborationContextProvider: React.FC<{
     // Whatever the last room was managing to save says nothing about this one.
     setScenePersistence(PERSISTENCE_UNKNOWN);
 
-    const socketUrl =
-      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001";
+    const hasBackup = socketUrls.length > 1;
 
     const socket = io(socketUrl, {
       query: { roomId: currentRoomId, userId: currentUserId, userTag: tag },
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
+      // Shorter when there is somewhere to fail over to; unchanged for a
+      // single-server deployment.
+      reconnectionAttempts: hasBackup ? FAILOVER_RECONNECT_ATTEMPTS : 10,
+      reconnectionDelay: hasBackup ? FAILOVER_RECONNECT_DELAY_MS : 1000,
+      reconnectionDelayMax: FAILOVER_RECONNECT_DELAY_MAX_MS,
       transports: ["websocket", "polling"],
       timeout: 10_000,
+      // A fresh Manager per attempt, so a server abandoned earlier is not
+      // reused out of socket.io's per-URL cache when the rotation comes back
+      // round to it.
+      forceNew: true,
     });
 
     socketRef.current = socket;
+
+    /*
+     * This server has run out of reconnection attempts. Advance to the next URL
+     * and let the effect re-run with it; the cleanup below closes this socket
+     * first, so the two never overlap. With a single configured server there is
+     * nowhere to go, and the historical behaviour of stopping is kept.
+     */
+    socket.io.on("reconnect_failed", () => {
+      if (!hasBackup) {
+        return;
+      }
+      setSocketUrlIndex((index) => index + 1);
+    });
 
     const isSelf = (candidate: unknown) => candidate === currentUserId;
 
@@ -369,6 +486,53 @@ export const CollaborationContextProvider: React.FC<{
         }
         return next;
       });
+
+      /*
+       * The host is the first name in the roster, which the server orders by
+       * when each person joined. Two things follow from that.
+       *
+       * If I am the host, somebody new joined behind me and cannot see where I
+       * am, so I re-announce my pointer for them to centre on. An ordinary
+       * cursor send will not do: it is throttled, and a room is idle exactly
+       * when a newcomer arrives.
+       *
+       * If I am the newcomer, the first name that is not mine is the host, and
+       * their next pointer centres my view. The pointer may already have
+       * arrived — the two messages can cross instances and reorder — in which
+       * case it is used now.
+       */
+      const hostId = incoming[0]?.id;
+      const sawNewPeer = incoming.some(
+        (user) => user.id !== currentUserId && !knownUserIdsRef.current.has(user.id),
+      );
+      knownUserIdsRef.current = new Set(incoming.map((user) => user.id));
+
+      if (sawNewPeer && hostId === currentUserId) {
+        const point = lastCursorRef.current;
+        if (point) {
+          socket.emit("announce-cursor", {
+            roomId: currentRoomId,
+            userId: currentUserId,
+            x: point.x,
+            y: point.y,
+            tag: currentUserName(),
+          });
+        }
+      }
+
+      if (
+        pendingHostIdRef.current === null &&
+        !hostCentredRef.current &&
+        hostId &&
+        hostId !== currentUserId
+      ) {
+        pendingHostIdRef.current = hostId;
+        const known = cursorByUserRef.current[hostId];
+        if (known) {
+          hostCentredRef.current = true;
+          handlersRef.current.onHostCursor?.(known);
+        }
+      }
     });
 
     /*
@@ -440,6 +604,19 @@ export const CollaborationContextProvider: React.FC<{
             updatedAt: Date.now(),
           },
         }));
+
+        // The first pointer from the host is the join handshake: centre the
+        // view on it, once, then leave navigation alone.
+        const from = data.userId as string;
+        cursorByUserRef.current[from] = {
+          x: data.x as number,
+          y: data.y as number,
+        };
+
+        if (pendingHostIdRef.current === from && !hostCentredRef.current) {
+          hostCentredRef.current = true;
+          handlersRef.current.onHostCursor?.(cursorByUserRef.current[from]);
+        }
       },
     );
 
@@ -562,10 +739,12 @@ export const CollaborationContextProvider: React.FC<{
 
     return () => {
       socket.removeAllListeners();
+      // `disconnect()` also tears the Manager down (`skipReconnect`), so a
+      // socket being replaced by a failover cannot reconnect behind the new one.
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [currentUserName, isClient, roomIdProp]);
+  }, [currentUserName, isClient, roomIdProp, socketUrl, socketUrls]);
 
   /* Drop cursors of people who stopped moving, so labels do not pile up. */
   useEffect(() => {
@@ -693,6 +872,10 @@ export const CollaborationContextProvider: React.FC<{
 
   const sendCursor = useCallback(
     (point: Point) => {
+      // Remembered before the throttle can swallow the send: this is the
+      // position the host re-announces to a newcomer.
+      lastCursorRef.current = point;
+
       const now = Date.now();
       if (now - lastCursorSentRef.current < CURSOR_THROTTLE_MS) {
         return;
@@ -721,19 +904,68 @@ export const CollaborationContextProvider: React.FC<{
     emit("canvas-update", { shapes: [...pending.values()], isPartial: true });
   }, [emit]);
 
+  /** The accumulated preview frames, as one volatile partial update. */
+  const flushTransient = useCallback(() => {
+    if (transientTimerRef.current !== null) {
+      window.clearTimeout(transientTimerRef.current);
+      transientTimerRef.current = null;
+    }
+
+    const pending = pendingTransientRef.current;
+    if (pending.size === 0) {
+      return;
+    }
+    pendingTransientRef.current = new Map();
+    emit(
+      "canvas-update",
+      { shapes: [...pending.values()], isPartial: true, isTransient: true },
+      { volatile: true },
+    );
+  }, [emit]);
+
+  /**
+   * Forget queued previews, because something authoritative now covers them.
+   *
+   * Without this a preview queued a frame before the commit would flush after
+   * it — both channels share one TCP connection, so the peer would apply the
+   * older position last and the shape would snap back on release. The timer is
+   * cancelled with the last id, so an emptied queue schedules nothing.
+   */
+  const discardTransient = useCallback((ids?: Iterable<string>) => {
+    const pending = pendingTransientRef.current;
+    if (pending.size === 0) {
+      return;
+    }
+
+    if (ids) {
+      for (const id of ids) {
+        pending.delete(id);
+      }
+    } else {
+      pending.clear();
+    }
+
+    if (pending.size === 0 && transientTimerRef.current !== null) {
+      window.clearTimeout(transientTimerRef.current);
+      transientTimerRef.current = null;
+    }
+  }, []);
+
   const sendScene = useCallback(
     (elements: Shape[]) => {
       // A full scene replaces everything a peer holds, so an incremental update
-      // still in flight would only re-apply an older element on top of it.
+      // still in flight would only re-apply an older element on top of it — and a
+      // preview is an even staler version of the same thing.
       if (elementTimerRef.current !== null) {
         window.clearTimeout(elementTimerRef.current);
         elementTimerRef.current = null;
       }
       pendingElementsRef.current.clear();
+      discardTransient();
 
       emit("canvas-update", { shapes: elements, fullUpdate: true });
     },
-    [emit],
+    [discardTransient, emit],
   );
 
   const sendElements = useCallback(
@@ -741,6 +973,10 @@ export const CollaborationContextProvider: React.FC<{
       if (elements.length === 0) {
         return;
       }
+
+      // A committed element supersedes every preview of it, including one queued
+      // for the next frame.
+      discardTransient(elements.map((element) => element.id));
 
       const pending = pendingElementsRef.current;
       for (const element of elements) {
@@ -760,7 +996,37 @@ export const CollaborationContextProvider: React.FC<{
         flushElements();
       }, ELEMENT_COALESCE_MS);
     },
-    [flushElements],
+    [discardTransient, flushElements],
+  );
+
+  /**
+   * A mid-gesture preview. Same leading-edge-plus-window shape as
+   * `sendElements`, but volatile: a frame the link could not carry is dropped
+   * rather than queued ahead of the frame after it.
+   */
+  const sendTransientElements = useCallback(
+    (elements: Shape[]) => {
+      if (elements.length === 0) {
+        return;
+      }
+
+      const pending = pendingTransientRef.current;
+      for (const element of elements) {
+        pending.set(element.id, element);
+      }
+
+      if (transientTimerRef.current !== null) {
+        // A trailing send is already scheduled; this call only refreshed it.
+        return;
+      }
+
+      flushTransient();
+      transientTimerRef.current = window.setTimeout(() => {
+        transientTimerRef.current = null;
+        flushTransient();
+      }, TRANSIENT_COALESCE_MS);
+    },
+    [flushTransient],
   );
 
   const sendDeletions = useCallback(
@@ -769,13 +1035,15 @@ export const CollaborationContextProvider: React.FC<{
         return;
       }
       // An element erased while its update is still queued must not be
-      // resurrected by that queue when it flushes.
+      // resurrected by that queue when it flushes — and the same goes for a
+      // preview of it.
+      discardTransient(ids);
       for (const id of ids) {
         pendingElementsRef.current.delete(id);
       }
       emit("canvas-update", { deletedShapeIds: ids, isPartial: true });
     },
-    [emit],
+    [discardTransient, emit],
   );
 
   const sendPendingElement = useCallback(
@@ -899,6 +1167,7 @@ export const CollaborationContextProvider: React.FC<{
       sendCursor,
       sendScene,
       sendElements,
+      sendTransientElements,
       sendDeletions,
       sendPendingElement,
       setEventHandlers,
@@ -917,6 +1186,7 @@ export const CollaborationContextProvider: React.FC<{
       sendElements,
       sendPendingElement,
       sendScene,
+      sendTransientElements,
       setEventHandlers,
       setUserName,
       shareableLink,

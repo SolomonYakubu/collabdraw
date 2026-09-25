@@ -332,6 +332,51 @@ describe("broadcast", () => {
     expect(payload.changed).toBe(payload.elements);
   });
 
+  it("marks a mid-gesture preview as transient", () => {
+    // A drag re-applies on every pointer move; the flag is what tells the canvas
+    // to put those frames on the droppable channel and the release on the
+    // reliable one.
+    const onChange = vi.fn();
+    const { result } = setup({ initialElements: [box("first")], onChange });
+
+    act(() => {
+      result.current.applyElements(
+        (previous) => [box("first", { x: 40 }), ...previous.slice(1)],
+        { commit: false, changedIds: ["first"], transient: true },
+      );
+    });
+
+    const payload = lastPayload(onChange);
+    expect(payload.mode).toBe("elements");
+    expect(payload.transient).toBe(true);
+  });
+
+  it("does not mark a settled change transient", () => {
+    const onChange = vi.fn();
+    const { result } = setup({ initialElements: [box("first")], onChange });
+
+    act(() => {
+      result.current.applyElements([box("second")], { changedIds: ["second"] });
+    });
+
+    expect(lastPayload(onChange).transient).toBe(false);
+  });
+
+  it("never marks a full scene transient, whatever the caller passed", () => {
+    // A full scene is authoritative and must never be droppable.
+    const onChange = vi.fn();
+    const { result } = setup({ initialElements: [box("first")], onChange });
+
+    act(() => {
+      result.current.applyElements([box("first"), box("second")], {
+        broadcast: "full",
+        transient: true,
+      });
+    });
+
+    expect(lastPayload(onChange).transient).toBe(false);
+  });
+
   it("stays quiet when the change is local", () => {
     const onChange = vi.fn();
     const { result } = setup({ onChange });

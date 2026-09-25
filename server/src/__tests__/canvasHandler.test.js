@@ -224,6 +224,95 @@ describe("canvas-update", () => {
       "b",
     ]);
   });
+
+  it("relays a mid-gesture preview volatile, and still merges it into the scene", () => {
+    /*
+     * The store is the merged authoritative scene, so a preview has to land in
+     * it: if it lived only on the wire, a sender who dropped mid-drag would
+     * leave the peers and the store disagreeing. What the flag changes is the
+     * relay — a backed-up recipient drops the frame rather than queueing it
+     * ahead of the committed update behind it.
+     */
+    join(h);
+    h.store.setCanvasState("room1", [shape("a")]);
+
+    h.fire("canvas-update", {
+      roomId: "room1",
+      shapes: [shape("a", { x: 40 })],
+      isTransient: true,
+    });
+
+    expect(h.store.getCanvasState("room1")).toEqual([shape("a", { x: 40 })]);
+    expect(h.roomState.scheduleFlush).toHaveBeenCalled();
+    expect(h.sent("canvas-update")).toEqual([
+      {
+        to: "room:room1",
+        event: "canvas-update",
+        payload: {
+          roomId: "room1",
+          shapes: [shape("a", { x: 40 })],
+          deletedShapeIds: null,
+          fullUpdate: false,
+          isTransient: true,
+        },
+        volatile: true,
+      },
+    ]);
+  });
+
+  it("still validates a preview before relaying it", () => {
+    // A preview is attacker-controlled like any other payload, so the caps and
+    // schema checks run first; nothing usable means nothing sent.
+    join(h);
+
+    h.fire("canvas-update", {
+      roomId: "room1",
+      shapes: [shape(7), "nope"],
+      isTransient: true,
+    });
+
+    expect(h.emitted).toEqual([]);
+  });
+
+  it("keeps a preview that also deletes on the reliable path", () => {
+    // Deletions must not be droppable, and a payload carrying both cannot be
+    // split cheaply — so the whole thing takes the path that stores and retries.
+    join(h);
+    h.store.setCanvasState("room1", [shape("a"), shape("b")]);
+
+    h.fire("canvas-update", {
+      roomId: "room1",
+      shapes: [shape("a", { x: 40 })],
+      deletedShapeIds: ["b"],
+      isTransient: true,
+    });
+
+    expect(h.store.getCanvasState("room1").map((s) => s.id)).toEqual(["a"]);
+    expect(h.roomState.scheduleFlush).toHaveBeenCalled();
+    const relay = h.sent("canvas-update")[0];
+    expect(relay.volatile).toBeUndefined();
+    expect(relay.payload).toMatchObject({
+      deletedShapeIds: ["b"],
+      fullUpdate: false,
+    });
+  });
+
+  it("treats a full update as reliable even when marked transient", () => {
+    // A draggable preview is never a full scene; a payload claiming both is a
+    // malformed or hostile message, and the authoritative reading wins.
+    join(h);
+
+    h.fire("canvas-update", {
+      roomId: "room1",
+      shapes: [shape("a")],
+      fullUpdate: true,
+      isTransient: true,
+    });
+
+    expect(h.store.getCanvasState("room1").map((s) => s.id)).toEqual(["a"]);
+    expect(h.roomState.scheduleFlush).toHaveBeenCalled();
+    expect(h.sent("canvas-update")[0].volatile).toBeUndefined();
+  });
 });
 
 describe("canvas-state-response", () => {

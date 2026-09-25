@@ -68,13 +68,16 @@ describe("join-room", () => {
 
   it("stamps the socket, which is what a cluster-wide roster reads", async () => {
     // `fetchSockets()` returns sockets, not store rows; without this the roster
-    // is empty on every instance but the one holding the store.
+    // is empty on every instance but the one holding the store. `joinedAt` is
+    // what orders the roster across instances, so the client's "host" — the
+    // first name — is the same person on every one of them.
     await join(h, validJoin);
 
     expect(h.socket.data).toEqual({
       userId: "user1",
       userTag: "Ada",
       roomId: "room1",
+      joinedAt: expect.any(Number),
     });
   });
 
@@ -341,6 +344,42 @@ describe("the roster, with a Redis adapter behind it", () => {
 
     expect(h.sent("active-users")[0].payload.users).toEqual([
       { id: "user1", tag: "Ada" },
+    ]);
+  });
+
+  it("orders the roster by who joined first, so the host is the same everywhere", async () => {
+    // A cluster `fetchSockets()` comes back in no particular order. The client
+    // reads the first name as the host — the pointer a newcomer centres on — so
+    // without this ordering two instances would disagree about who that is.
+    h.withClusterSockets([
+      { data: { userId: "user3", userTag: "Cy", joinedAt: 300 } },
+      { data: { userId: "user1", userTag: "Ada", joinedAt: 100 } },
+      { data: { userId: "user2", userTag: "Bo", joinedAt: 200 } },
+    ]);
+
+    await join(h, validJoin);
+
+    expect(h.sent("active-users")[0].payload.users).toEqual([
+      { id: "user1", tag: "Ada" },
+      { id: "user2", tag: "Bo" },
+      { id: "user3", tag: "Cy" },
+    ]);
+  });
+
+  it("folds a two-tab user to the tab that joined first", async () => {
+    // Either tab could answer for the person; the earliest keeps their place at
+    // the front of the roster rather than moving them behind a later joiner.
+    h.withClusterSockets([
+      { data: { userId: "user2", userTag: "Bo", joinedAt: 200 } },
+      { data: { userId: "user1", userTag: "Ada", joinedAt: 300 } },
+      { data: { userId: "user1", userTag: "Ada", joinedAt: 100 } },
+    ]);
+
+    await join(h, validJoin);
+
+    expect(h.sent("active-users")[0].payload.users).toEqual([
+      { id: "user1", tag: "Ada" },
+      { id: "user2", tag: "Bo" },
     ]);
   });
 

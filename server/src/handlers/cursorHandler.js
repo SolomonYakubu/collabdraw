@@ -34,6 +34,34 @@ function registerCursorHandlers(io, socket) {
       return;
     }
 
+    socket.to(roomId).volatile.emit("cursor-position", {
+      userId,
+      x: safeX,
+      y: safeY,
+      tag: clampTag(tag),
+    });
+  });
+
+  /*
+   * The same cursor, relayed reliably because it is sent once, on purpose: a
+   * peer who has just joined needs the host's position to centre their view,
+   * and a dropped seed leaves them staring at empty space with nothing to tell
+   * them the host exists. Ordinary cursor traffic stays volatile above; this is
+   * the one cursor message whose loss costs more than a frame of polish.
+   */
+  socket.on("announce-cursor", (data) => {
+    const { roomId, x, y, tag } = data || {};
+
+    if (!isValidRoomId(roomId)) return;
+    if (roomStore.userRooms.get(socket.id) !== roomId) return;
+
+    const userId = senderId();
+    const safeX = clampCoordinate(x);
+    const safeY = clampCoordinate(y);
+    if (!userId || safeX === undefined || safeY === undefined) {
+      return;
+    }
+
     socket.to(roomId).emit("cursor-position", {
       userId,
       x: safeX,
@@ -65,7 +93,10 @@ function registerCursorHandlers(io, socket) {
       payload.pointsOffset = pointsOffset;
     }
 
-    socket.to(roomId).emit("shape-in-progress", payload);
+    // Volatile for the same reason the client sends it volatile: a preview the
+    // recipient could not take yet is worth less than the shape update behind it,
+    // and queuing it on their socket delays that.
+    socket.to(roomId).volatile.emit("shape-in-progress", payload);
   });
 
   // Handle drawing state updates (isDrawing flag for status indicators)

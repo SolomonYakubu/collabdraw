@@ -965,7 +965,7 @@ export const usePointerInteraction = ({
                     )
                   : element,
               ),
-            { commit: false, changedIds: [arrowId] },
+            { commit: false, changedIds: [arrowId], transient: true },
           );
           return;
         }

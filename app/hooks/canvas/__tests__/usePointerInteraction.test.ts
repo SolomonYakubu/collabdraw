@@ -1229,6 +1229,7 @@ describe("dragging", () => {
     expect(harness.lastApplied.options).toEqual({
       commit: false,
       changedIds: ["a"],
+      transient: true,
     });
     expect(harness.commits).toBe(0);
 

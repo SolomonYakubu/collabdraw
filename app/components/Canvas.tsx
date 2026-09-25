@@ -67,7 +67,7 @@ import {
   HIT_THRESHOLD_PX,
 } from "../services/canvas/hitTest";
 import { unionBoxes } from "../utils/geometry";
-import { clientToWorld, screenToWorld } from "../utils/viewport";
+import { clientToWorld, centerOnWorldPoint, screenToWorld } from "../utils/viewport";
 
 import { useScene, type SceneBroadcast } from "../hooks/canvas/useScene";
 import { useViewport } from "../hooks/canvas/useViewport";
@@ -155,6 +155,11 @@ const Canvas: React.FC<CanvasProps> = ({
   const interactiveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const spacePressedRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * The one-time join centring happens at most once per mount. The host's
+   * pointer can keep arriving afterwards; none of it may drag the view back.
+   */
+  const hasCenteredOnHostRef = useRef(false);
 
   /**
    * No board and no room: the scene comes from this browser. It is read once,
@@ -243,6 +248,7 @@ const Canvas: React.FC<CanvasProps> = ({
     sendCursor,
     sendScene,
     sendElements,
+    sendTransientElements,
     sendDeletions,
     sendPendingElement,
     setEventHandlers,
@@ -264,7 +270,7 @@ const Canvas: React.FC<CanvasProps> = ({
   const notifyEditRef = useRef<() => void>(() => {});
 
   const handleSceneChange = useCallback(
-    ({ elements, changed, deletedIds, mode }: SceneBroadcast) => {
+    ({ elements, changed, deletedIds, mode, transient }: SceneBroadcast) => {
       // A locally-originated change is the user taking their turn. `onChange`
       // never fires for remote peers' edits (they apply with broadcast:"none"),
       // and the assistant hook filters out its own writes, so this can fire
@@ -279,14 +285,26 @@ const Canvas: React.FC<CanvasProps> = ({
       if (mode === "full") {
         sendScene(elements);
       } else if (changed.length > 0) {
-        sendElements(changed);
+        // A mid-gesture preview is droppable: the next frame or the commit on
+        // release replaces it, so it must not queue ahead of live messages.
+        if (transient) {
+          sendTransientElements(changed);
+        } else {
+          sendElements(changed);
+        }
       }
 
       if (deletedIds.length > 0) {
         sendDeletions(deletedIds);
       }
     },
-    [isCollaborative, sendDeletions, sendElements, sendScene],
+    [
+      isCollaborative,
+      sendDeletions,
+      sendElements,
+      sendScene,
+      sendTransientElements,
+    ],
   );
 
   const scene = useScene({
@@ -334,6 +352,31 @@ const Canvas: React.FC<CanvasProps> = ({
     // person using it has since panned to.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /*
+   * Start where the host is. A newcomer who joined a room somebody was already
+   * in is centred on that person's pointer, so the drawing and their cursor are
+   * on screen rather than whatever empty space this client's own saved viewport
+   * happens to show. The zoom is left alone — it is the newcomer's, not the
+   * host's. A canvas that has not been measured yet (0x0) makes the helper
+   * return the viewport unchanged, so the scroll never becomes NaN.
+   */
+  const centerOnHost = useCallback(
+    (point: Point) => {
+      if (hasCenteredOnHostRef.current) {
+        return;
+      }
+
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) {
+        return;
+      }
+
+      hasCenteredOnHostRef.current = true;
+      setViewport((current) => centerOnWorldPoint(current, point, rect));
+    },
+    [setViewport],
+  );
 
   // Client-side persistence the socket server can't do: record the open,
   // capture thumbnails, and flush the scene on unload while offline.
@@ -557,9 +600,13 @@ const Canvas: React.FC<CanvasProps> = ({
         setSelectedIds((current) => current.filter((id) => !removing.has(id)));
       },
       getScene: () => elementsRef.current,
+      // The one-time join handshake: the host's pointer, so a newcomer starts
+      // where the room is instead of wherever their own saved viewport points.
+      onHostCursor: centerOnHost,
     });
   }, [
     applyElements,
+    centerOnHost,
     elementsRef,
     isCollaborative,
     resetHistory,

@@ -76,6 +76,7 @@ interface CollaborationFake {
   sendCursor: (point: unknown) => void;
   sendScene: (elements: Shape[]) => void;
   sendElements: (elements: Shape[]) => void;
+  sendTransientElements: (elements: Shape[]) => void;
   sendDeletions: (ids: string[]) => void;
   sendPendingElement: (element: Shape | null) => void;
   setEventHandlers: (handlers: {
@@ -84,6 +85,7 @@ interface CollaborationFake {
     onElements?: (elements: Shape[]) => void;
     onDeletions?: (ids: string[]) => void;
     getScene?: () => Shape[];
+    onHostCursor?: (point: { x: number; y: number }) => void;
   }) => void;
 }
 
@@ -123,6 +125,7 @@ const makeCollab = (): CollaborationFake => ({
   sendCursor: vi.fn(),
   sendScene: vi.fn(),
   sendElements: vi.fn(),
+  sendTransientElements: vi.fn(),
   sendDeletions: vi.fn(),
   sendPendingElement: vi.fn(),
   setEventHandlers: vi.fn((handlers) => {
@@ -507,6 +510,49 @@ describe("what it puts on the wire", () => {
     expect(collab.sendDeletions).toHaveBeenCalledWith(["a"]);
   });
 
+  it("sends a drag frame transient and the release as a commit", () => {
+    /*
+     * The gesture is a preview: a frame that a backed-up link drops costs
+     * smoothness, not correctness, because the release re-sends the settled
+     * element through the reliable path.
+     */
+    const filled = createElement("Square", {
+      id: "a",
+      x: 0,
+      y: 0,
+      width: 40,
+      height: 30,
+      fill: "#ffffff",
+    })!;
+    open({ ...BOARD, initialElements: [filled] });
+    selectAll();
+
+    fireEvent.pointerDown(surface(), {
+      clientX: 10,
+      clientY: 10,
+      button: 0,
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(surface(), {
+      clientX: 60,
+      clientY: 10,
+      pointerId: 1,
+    });
+
+    expect(collab.sendElements).not.toHaveBeenCalled();
+    const [preview] = vi.mocked(collab.sendTransientElements).mock.calls.at(-1)!;
+    expect(preview.map((element) => element.id)).toEqual(["a"]);
+    expect(preview[0].x).toBe(50);
+
+    fireEvent.pointerUp(surface(), {
+      clientX: 60,
+      clientY: 10,
+      pointerId: 1,
+    });
+
+    expect(collab.sendElements).toHaveBeenCalled();
+  });
+
   it("says nothing at all on a canvas that is not shared", async () => {
     // There is no socket on `/`, and the sends are no-ops there — but they are
     // skipped rather than called, since each one would serialise the scene.
@@ -631,6 +677,66 @@ describe("what it does with what the socket says", () => {
     act(() => socket.onElements!([box("theirs")]));
 
     expect(paintedIds()).toEqual(["theirs"]);
+  });
+
+  it("offers a host-pointer handler so a join can start where the host is", () => {
+    open(BOARD);
+
+    expect(typeof socket.onHostCursor).toBe("function");
+  });
+
+  it("centres the view on the host's pointer when a join delivers it", () => {
+    /*
+     * A newcomer's own saved viewport can point at empty space. Centring on the
+     * host puts the drawing — and the host's cursor — on screen instead. jsdom
+     * lays nothing out, so every element is given a canvas-sized rect: the
+     * centring reads the container's, the pointer maths reads the canvas's.
+     */
+    open(BOARD);
+    const rect = {
+      width: 800,
+      height: 600,
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 600,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(rect);
+
+    act(() => socket.onHostCursor!({ x: 100, y: 50 }));
+
+    // The host's point is now the middle of the screen, so a pointer there is
+    // over it in world coordinates.
+    fireEvent.pointerMove(surface(), { clientX: 400, clientY: 300 });
+
+    expect(collab.sendCursor).toHaveBeenCalledWith({ x: 100, y: 50 });
+  });
+
+  it("leaves the view alone on any later host pointer", () => {
+    // The host keeps moving; only the first sight of them may move this view.
+    open(BOARD);
+    const rect = {
+      width: 800,
+      height: 600,
+      left: 0,
+      top: 0,
+      right: 800,
+      bottom: 600,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(rect);
+
+    act(() => socket.onHostCursor!({ x: 100, y: 50 }));
+    act(() => socket.onHostCursor!({ x: -900, y: -900 }));
+
+    fireEvent.pointerMove(surface(), { clientX: 400, clientY: 300 });
+
+    expect(collab.sendCursor).toHaveBeenCalledWith({ x: 100, y: 50 });
   });
 });
 

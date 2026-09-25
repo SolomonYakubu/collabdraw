@@ -34,6 +34,11 @@ interface FakeSocket {
     volatile?: boolean;
   }>;
   listeners: Map<string, (payload: unknown) => void>;
+  /** Manager-level listeners, `reconnect_failed` among them. */
+  managerListeners: Map<string, () => void>;
+  io: {
+    on: (event: string, handler: () => void) => void;
+  };
   teardowns: number;
   disconnects: number;
   on: (event: string, handler: (payload: unknown) => void) => void;
@@ -52,8 +57,14 @@ const createFakeSocket = (): FakeSocket => {
     connected: false,
     sent: [],
     listeners: new Map(),
+    managerListeners: new Map(),
     teardowns: 0,
     disconnects: 0,
+    io: {
+      on: (event, handler) => {
+        socket.managerListeners.set(event, handler);
+      },
+    },
     on: (event, handler) => {
       socket.listeners.set(event, handler);
     },
@@ -92,9 +103,9 @@ import {
   ELEMENT_COALESCE_MS,
   FREEHAND_FULL_EVERY,
   PENDING_THROTTLE_MS,
+  TRANSIENT_COALESCE_MS,
   type CollaborationEventHandlers,
-} from "../CollaborationContext";
-import {
+} from "../CollaborationContext";import {
   USER_ID_KEY,
   USER_NAME_KEY,
 } from "../../services/collaboration/identity";
@@ -433,6 +444,120 @@ describe("opening the socket", () => {
     expect(sockets).toHaveLength(2);
     expect(sockets[0].disconnects).toBe(1);
     expect(connections[1].query).toMatchObject({ roomId: "room2" });
+  });
+});
+
+/**
+ * Failover. Two Socket.IO servers are deployed behind one app; the client opens
+ * the primary and, when that server has exhausted its reconnection attempts,
+ * rotates to the backup and rejoins the room there. The rotation is an effect
+ * re-run, so the old socket is closed before the new one is opened.
+ */
+describe("failing over to the backup server", () => {
+  const PRIMARY = "http://primary.example:3001";
+  const BACKUP = "http://backup.example:3001";
+  let savedPrimary: string | undefined;
+  let savedBackup: string | undefined;
+
+  beforeEach(() => {
+    savedPrimary = process.env.NEXT_PUBLIC_SOCKET_URL;
+    savedBackup = process.env.NEXT_PUBLIC_SOCKET_URL_BACKUP;
+    process.env.NEXT_PUBLIC_SOCKET_URL = PRIMARY;
+  });
+
+  afterEach(() => {
+    /*
+     * Restored with the empty string rather than `undefined`: assigning
+     * `undefined` to a `process.env` key coerces it to the string "undefined",
+     * which is truthy and would leave a nonsense backup URL behind.
+     */
+    process.env.NEXT_PUBLIC_SOCKET_URL = savedPrimary ?? "";
+    process.env.NEXT_PUBLIC_SOCKET_URL_BACKUP = savedBackup ?? "";
+  });
+
+  /** The provider reads the env at render time, so a test sets it first. */
+  const mountWithBackup = () => {
+    process.env.NEXT_PUBLIC_SOCKET_URL_BACKUP = BACKUP;
+    return mountInRoom();
+  };
+
+  /** Play the manager: this server's reconnection attempts are exhausted. */
+  const exhaustPrimary = () => {
+    act(() => {
+      socket().managerListeners.get("reconnect_failed")?.();
+    });
+  };
+
+  it("opens the backup when the primary gives up reconnecting", () => {
+    mountWithBackup();
+    expect(connections[0].url).toBe(PRIMARY);
+
+    exhaustPrimary();
+
+    expect(connections[1].url).toBe(BACKUP);
+    // The abandoned socket was closed, so it cannot reconnect behind its
+    // replacement.
+    expect(sockets[0].disconnects).toBe(1);
+  });
+
+  it("rejoins the room on the backup", () => {
+    mountWithBackup();
+
+    exhaustPrimary();
+    goOnline();
+
+    expect(sentOn("join-room")).toEqual([
+      { roomId: "room1", userId: ME, userTag: "Ada" },
+    ]);
+  });
+
+  it("rotates back to the primary on the next failure", () => {
+    // Both servers down in turn: the loop alternates rather than parking on the
+    // backup forever, so recovery of either is picked up.
+    mountWithBackup();
+
+    exhaustPrimary();
+    exhaustPrimary();
+
+    expect(connections.map((connection) => connection.url)).toEqual([
+      PRIMARY,
+      BACKUP,
+      PRIMARY,
+    ]);
+  });
+
+  it("keeps retrying one server when no backup is configured", () => {
+    // The historical behaviour: without anywhere to go, the client retries the
+    // single server rather than cycling to a URL that does not exist.
+    mountInRoom();
+
+    exhaustPrimary();
+    exhaustPrimary();
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].disconnects).toBe(0);
+  });
+
+  it("does not re-run the join handshake for a rotation", () => {
+    /*
+     * The one-time centring and the roster memory belong to the room, not to
+     * the connection: a failover replays `join-room` on the new server but must
+     * not reset who the host is, or the view would jump again.
+     */
+    const onHostCursor = vi.fn();
+    process.env.NEXT_PUBLIC_SOCKET_URL_BACKUP = BACKUP;
+    mountInRoom("room1", { onHostCursor });
+    goOnline();
+
+    roster({ id: "host", tag: "Ada" }, { id: ME, tag: "Me" });
+    deliver("cursor-position", { userId: "host", x: 3, y: 4, tag: "Ada" });
+    expect(onHostCursor).toHaveBeenCalledTimes(1);
+
+    exhaustPrimary();
+    expect(connections).toHaveLength(2);
+
+    // The new connection carries the same room; the handshake state survived.
+    expect(connections[1].query).toMatchObject({ roomId: "room1" });
   });
 });
 
@@ -785,6 +910,124 @@ describe("other people's cursors", () => {
     advance(10_000);
 
     expect(cursorUpdates).toBe(updates);
+  });
+});
+
+/**
+ * The join handshake. The roster is ordered by when each person joined, so its
+ * first name is the room's host: the person whose pointer a newcomer centres on
+ * and who re-announces that pointer when somebody joins behind them.
+ */
+describe("starting where the host is", () => {
+  it("centres a joiner on the first pointer from the host", () => {
+    const onHostCursor = vi.fn();
+    mountInRoom("room1", { onHostCursor });
+    goOnline();
+
+    roster({ id: "host", tag: "Ada" }, { id: ME, tag: "Me" });
+    deliver("cursor-position", { userId: "host", x: 12, y: 34, tag: "Ada" });
+
+    expect(onHostCursor).toHaveBeenCalledWith({ x: 12, y: 34 });
+  });
+
+  it("ignores a pointer from anyone who is not the host", () => {
+    const onHostCursor = vi.fn();
+    mountInRoom("room1", { onHostCursor });
+    goOnline();
+
+    roster(
+      { id: "host", tag: "Ada" },
+      { id: "other", tag: "Bo" },
+      { id: ME, tag: "Me" },
+    );
+    deliver("cursor-position", { userId: "other", x: 5, y: 6, tag: "Bo" });
+
+    expect(onHostCursor).not.toHaveBeenCalled();
+
+    deliver("cursor-position", { userId: "host", x: 7, y: 8, tag: "Ada" });
+
+    expect(onHostCursor).toHaveBeenCalledWith({ x: 7, y: 8 });
+  });
+
+  it("still centres when the host's pointer arrives before the roster", () => {
+    // The two messages can leave different instances and arrive in either order,
+    // which is why the last pointer is kept rather than only looked at live.
+    const onHostCursor = vi.fn();
+    mountInRoom("room1", { onHostCursor });
+    goOnline();
+
+    deliver("cursor-position", { userId: "host", x: 1, y: 2, tag: "Ada" });
+    roster({ id: "host", tag: "Ada" }, { id: ME, tag: "Me" });
+
+    expect(onHostCursor).toHaveBeenCalledWith({ x: 1, y: 2 });
+  });
+
+  it("centres only once, however much the host moves afterwards", () => {
+    const onHostCursor = vi.fn();
+    mountInRoom("room1", { onHostCursor });
+    goOnline();
+
+    roster({ id: "host", tag: "Ada" }, { id: ME, tag: "Me" });
+    deliver("cursor-position", { userId: "host", x: 1, y: 1 });
+    deliver("cursor-position", { userId: "host", x: 2, y: 2 });
+
+    expect(onHostCursor).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not centre the host on itself", () => {
+    // Alone at the head of the roster there is nobody ahead to follow.
+    const onHostCursor = vi.fn();
+    mountInRoom("room1", { onHostCursor });
+    goOnline();
+
+    roster({ id: ME, tag: "Me" }, { id: "p1", tag: "Bo" });
+    deliver("cursor-position", { userId: "p1", x: 5, y: 5, tag: "Bo" });
+
+    expect(onHostCursor).not.toHaveBeenCalled();
+  });
+
+  it("has the host re-announce its pointer when somebody new appears", () => {
+    // A newcomer cannot centre on a pointer that has not moved since they
+    // arrived, and the room is idle exactly at that moment. The ordinary cursor
+    // throttle would swallow a plain re-send, so the announcement is its own,
+    // reliable message.
+    mountInRoom();
+    goOnline();
+    act(() => api.sendCursor({ x: 9, y: 9 }));
+
+    roster({ id: ME, tag: "Me" });
+    expect(sentOn("announce-cursor")).toEqual([]);
+
+    roster({ id: ME, tag: "Me" }, { id: "p1", tag: "Bo" });
+
+    expect(sentOn("announce-cursor")).toEqual([
+      { roomId: "room1", userId: ME, x: 9, y: 9, tag: "Ada" },
+    ]);
+  });
+
+  it("a peer who is not the host does not announce", () => {
+    mountInRoom();
+    goOnline();
+    act(() => api.sendCursor({ x: 9, y: 9 }));
+
+    roster({ id: "host", tag: "Ada" }, { id: ME, tag: "Me" });
+    roster(
+      { id: "host", tag: "Ada" },
+      { id: ME, tag: "Me" },
+      { id: "p2", tag: "Cy" },
+    );
+
+    expect(sentOn("announce-cursor")).toEqual([]);
+  });
+
+  it("has nothing to announce before its pointer has been on the canvas", () => {
+    mountInRoom();
+    goOnline();
+
+    roster({ id: ME, tag: "Me" });
+    roster({ id: ME, tag: "Me" }, { id: "p1", tag: "Bo" });
+
+    expect(sentOn("announce-cursor")).toEqual([]);
   });
 });
 
@@ -1182,6 +1425,7 @@ describe("what this client sends", () => {
     act(() => {
       api.sendCursor({ x: 1, y: 2 });
       api.sendScene([square("s1")]);
+      api.sendTransientElements([square("s2")]);
       api.sendPendingElement(null);
     });
 
@@ -1269,13 +1513,14 @@ describe("what this client sends", () => {
   });
 
   it("says nothing when there is nothing to say", () => {
-    // Both are called from commit paths that often change nothing, and an empty
+    // All three are called from paths that often change nothing, and an empty
     // update still costs the server a fan-out to everybody in the room.
     mountInRoom();
     goOnline();
 
     act(() => {
       api.sendElements([]);
+      api.sendTransientElements([]);
       api.sendDeletions([]);
     });
 
@@ -1499,6 +1744,133 @@ describe("what this client sends", () => {
         (m) => (m.deletedShapeIds as string[] | undefined)?.[0] === "s2",
       ),
     ).toBe(true);
+  });
+
+  it("sends a mid-gesture preview as a volatile partial", () => {
+    // Movement is the same shape of problem as the cursor: a position the next
+    // frame or the commit supersedes is worth less than the message behind it,
+    // so it travels droppable and is marked as a preview for the server.
+    mountInRoom();
+    goOnline();
+
+    act(() => {
+      api.sendTransientElements([square("s1")]);
+    });
+
+    const [message] = socket().sent.filter(
+      (m) => m.event === "canvas-update",
+    );
+    expect(message.volatile).toBe(true);
+    expect(message.payload).toMatchObject({ isPartial: true, isTransient: true });
+    expect(
+      (message.payload.shapes as Array<{ id: string }>).map((s) => s.id),
+    ).toEqual(["s1"]);
+  });
+
+  it("folds a burst of previews into one message, first going out at once", () => {
+    // Same leading-edge-plus-window shape as a committed update, on its own
+    // shorter window: the first frame of a drag must not wait to be seen.
+    mountInRoom();
+    goOnline();
+
+    act(() => {
+      api.sendTransientElements([square("s1")]);
+      api.sendTransientElements([square("s2")]);
+      api.sendTransientElements([square("s3")]);
+    });
+
+    const leading = socket().sent.filter((m) => m.event === "canvas-update");
+    expect(leading).toHaveLength(1);
+    expect(
+      (leading[0].payload.shapes as Array<{ id: string }>).map((s) => s.id),
+    ).toEqual(["s1"]);
+
+    advance(TRANSIENT_COALESCE_MS + 1);
+
+    const all = socket().sent.filter((m) => m.event === "canvas-update");
+    expect(all).toHaveLength(2);
+    expect(
+      (all[1].payload.shapes as Array<{ id: string }>).map((s) => s.id),
+    ).toEqual(["s2", "s3"]);
+  });
+
+  it("does not let a queued preview land after the commit that replaces it", () => {
+    /*
+     * Both channels share one connection, so a preview flushed a frame after the
+     * commit would win the ordering and the shape would snap back to its
+     * mid-drag position on release.
+     */
+    mountInRoom();
+    goOnline();
+    const moved = (x: number) =>
+      createElement("Square", { id: "s1", x, y: 0, width: 10, height: 10 })!;
+
+    act(() => {
+      api.sendTransientElements([moved(0)]);
+      api.sendTransientElements([moved(40)]);
+      api.sendElements([moved(40)]);
+    });
+    advance(ELEMENT_COALESCE_MS + 1);
+
+    const messages = socket().sent.filter((m) => m.event === "canvas-update");
+    expect(messages).toHaveLength(2);
+    expect(messages[0].volatile).toBe(true);
+    // The last word is the reliable commit, not a leftover preview.
+    expect(messages[1].volatile).toBeUndefined();
+    expect(messages[1].payload.isTransient).toBeUndefined();
+    expect((messages[1].payload.shapes as Array<{ x: number }>)[0].x).toBe(40);
+  });
+
+  it("drops queued previews when a full scene goes out", () => {
+    mountInRoom();
+    goOnline();
+
+    act(() => {
+      api.sendTransientElements([square("s1")]);
+      api.sendTransientElements([square("s2")]);
+      api.sendScene([square("s1"), square("s2")]);
+    });
+    advance(TRANSIENT_COALESCE_MS + 1);
+    advance(ELEMENT_COALESCE_MS + 1);
+
+    const messages = socket().sent.filter((m) => m.event === "canvas-update");
+    expect(messages).toHaveLength(2);
+    expect(messages[0].volatile).toBe(true);
+    expect(messages[1].payload.fullUpdate).toBe(true);
+  });
+
+  it("never lets a preview resurrect an element that was deleted", () => {
+    mountInRoom();
+    goOnline();
+
+    act(() => {
+      api.sendTransientElements([square("s1")]);
+      api.sendTransientElements([square("s2")]);
+      api.sendDeletions(["s2"]);
+    });
+    advance(TRANSIENT_COALESCE_MS + 1);
+
+    const previews = socket().sent.filter(
+      (m) => m.event === "canvas-update" && m.payload.isTransient,
+    );
+    expect(previews).toHaveLength(1);
+    expect(
+      (previews[0].payload.shapes as Array<{ id: string }>).map((s) => s.id),
+    ).toEqual(["s1"]);
+  });
+
+  it("forgets a queued preview when the board closes", () => {
+    const { unmount } = mountInRoom();
+    goOnline();
+    act(() => {
+      api.sendTransientElements([square("s1")]);
+    });
+    const sent = socket().sent.length;
+
+    unmount();
+    advance(TRANSIENT_COALESCE_MS + 1);
+
+    expect(socket().sent).toHaveLength(sent);
   });
 
   it("tells the room when you rename yourself", () => {

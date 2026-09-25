@@ -41,7 +41,7 @@ function registerCanvasHandlers(io, socket) {
 
   // Handle canvas drawing updates
   socket.on('canvas-update', (data) => {
-    const { roomId, shapes, deletedShapeIds, fullUpdate } = data || {};
+    const { roomId, shapes, deletedShapeIds, fullUpdate, isTransient } = data || {};
     if (!isValidRoomId(roomId)) return;
     if (roomStore.userRooms.get(socket.id) !== roomId) return;
 
@@ -66,13 +66,33 @@ function registerCanvasHandlers(io, socket) {
     );
     scheduleFlush(roomId, roomStore.getCanvasState(roomId) || []);
 
+    /*
+     * A mid-gesture preview is merged into the room's scene like any other
+     * update — the server holds the merged authoritative scene, and a preview
+     * that lived only on the wire would leave the store and the peers
+     * disagreeing if the sender dropped mid-drag. What the flag changes is the
+     * relay: a preview the recipient's socket could not take yet is dropped
+     * rather than queued ahead of the committed update behind it, and the next
+     * preview or the commit on release corrects anything lost. Anything that
+     * deletes, clears or claims a full update takes the reliable path.
+     */
+    const transient =
+      Boolean(isTransient) && !isFullUpdate && !clearsScene && !safeDeleted;
+
     // Forward only the sanitized fields to all other clients in the room.
-    socket.to(roomId).emit('canvas-update', {
+    const payload = {
       roomId,
       shapes: clearsScene ? [] : safeShapes,
       deletedShapeIds: safeDeleted,
       fullUpdate: isFullUpdate,
-    });
+      ...(transient ? { isTransient: true } : {}),
+    };
+
+    if (transient) {
+      socket.to(roomId).volatile.emit('canvas-update', payload);
+    } else {
+      socket.to(roomId).emit('canvas-update', payload);
+    }
   });
 }
 

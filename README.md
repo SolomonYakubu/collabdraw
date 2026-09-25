@@ -280,6 +280,7 @@ control yet.
 GEMINI_API_KEY=...          # server-side only, for the AI endpoint
 GEMINI_MODEL=...            # optional model override
 NEXT_PUBLIC_SOCKET_URL=...  # defaults to http://localhost:3001
+NEXT_PUBLIC_SOCKET_URL_BACKUP=... # optional backup socket server, used on failover
 DATABASE_URL=...            # Neon pooled string, used by the app and socket server
 DATABASE_URL_UNPOOLED=...   # direct string, used only by npm run db:migrate
 ```

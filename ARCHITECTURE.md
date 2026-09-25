@@ -398,8 +398,50 @@ registers. It does not own the element list, so there is one source of truth.
 - Cursors travel in **world** coordinates and are projected locally, so a
   cursor lands on the same part of the drawing for everyone regardless of each
   person's zoom.
+- **Movement has two channels.** A drag re-applies on every pointer move, so
+  most of what it produces is a position the next move — or the commit on
+  release — already supersedes. Those mid-gesture frames are marked `transient`
+  by the interaction strategies and sent volatile. They are still merged into
+  the room's authoritative scene, so a sender who drops mid-drag cannot leave
+  the peers and the store disagreeing; what changes is the relay, which is
+  volatile too, so a recipient whose socket is backed up drops the frame instead
+  of queueing it ahead of the committed update behind it. The commit on release
+  goes through the ordinary reliable `canvas-update` and supersedes whatever a
+  dropped frame left behind. Queued previews are discarded when a commit, full
+  scene or deletion for the same ids goes out, because both channels share one
+  connection and a preview flushed after the commit would win the ordering and
+  snap the shape back.
+- Cursors, in-progress strokes and movement previews are **all volatile on both
+  hops**. A message that reached a recipient's socket ahead of a live one is
+  worth less than the live one, so the server drops it rather than queueing it —
+  client-side volatility alone would still let a slow peer's socket buffer delay
+  the shape update behind a burst of cursors.
+- **A newcomer starts where the host is.** Each person's pan and zoom is their
+  own, so a joiner's saved viewport can be pointing at empty space while the
+  room is elsewhere. The roster is ordered by join time — across a cluster by the
+  `joinedAt` a socket is stamped with, since `fetchSockets()` comes back in no
+  order — which makes its first name the room's host on every instance. The host
+  re-announces its last pointer when somebody new appears (`announce-cursor`,
+  relayed reliably, unlike ordinary cursor traffic: a dropped seed is a view that
+  never moves), and the newcomer centres its view on that point once, leaving its
+  own zoom alone and ignoring everyone else's pointers. The editor's contribution
+  is one handler, `onHostCursor`, and the canvas does the centring; a client that
+  is itself the host, or that joins an empty room, is never moved.
 - `server/` (Socket.IO backend service, port 3001) relays messages and keeps
   the last known scene per room so a later joiner gets the drawing.
+- **The client fails over between socket servers.** A deployment may run two
+  (`NEXT_PUBLIC_SOCKET_URL` and `NEXT_PUBLIC_SOCKET_URL_BACKUP`); the client
+  opens the primary and, when Socket.IO gives up reconnecting to it
+  (`reconnect_failed`, after three fast attempts rather than the single
+  server's ten slow ones), rotates to the backup and rejoins the room there.
+  The rotation alternates, so both being down in turn still recovers when
+  either comes back; with one URL configured the historical long retry is kept
+  and nothing rotates. The join handshake — host detection, the one-time
+  centring, the roster memory — belongs to the room rather than the
+  connection, so a failover replays `join-room` on the new server without
+  moving the view or forgetting who is here. Both URLs are inlined at build
+  time (`NEXT_PUBLIC_*`), so they must be set for the deployment serving the
+  bundle, not only on the socket servers.
 
 ## Persistence
 

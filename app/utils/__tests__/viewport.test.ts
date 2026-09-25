@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyViewportTransform,
+  centerOnWorldPoint,
   clientToWorld,
   getVisibleWorldBounds,
   INITIAL_VIEWPORT,
@@ -85,6 +86,34 @@ describe("zoomAtCenter", () => {
     expect(zoomAtCenter(viewport, 1e6, size).zoom).toBe(MAX_ZOOM);
     expect(zoomAtCenter(viewport, 0, size).zoom).toBe(MIN_ZOOM);
     expect(zoomAtCenter(viewport, viewport.zoom, size)).toBe(viewport);
+  });
+});
+
+describe("centerOnWorldPoint", () => {
+  const size = { width: 1000, height: 800 };
+
+  it("puts the world point in the middle of the canvas, zoom unchanged", () => {
+    const point = { x: 320, y: -45 };
+    const centred = centerOnWorldPoint(viewport, point, size);
+    const screen = worldToScreen(point.x, point.y, centred);
+
+    expect(centred.zoom).toBe(viewport.zoom);
+    expect(screen.x).toBeCloseTo(size.width / 2);
+    expect(screen.y).toBeCloseTo(size.height / 2);
+  });
+
+  it("returns the viewport unchanged for a canvas that is not measured", () => {
+    // The join handshake can arrive before layout; a zero size would divide by
+    // zero and put NaN in the scroll, blanking the canvas.
+    for (const degenerate of [
+      { width: 0, height: 800 },
+      { width: 1000, height: 0 },
+      { width: 0, height: 0 },
+    ]) {
+      expect(centerOnWorldPoint(viewport, { x: 1, y: 2 }, degenerate)).toBe(
+        viewport,
+      );
+    }
   });
 });
 

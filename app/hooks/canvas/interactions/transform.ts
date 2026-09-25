@@ -99,7 +99,7 @@ export function applyDragTransform(
 
       return updateBoundElements(moved, ids, { skipSelf: true });
     },
-    { commit: false, changedIds: [...ids] },
+    { commit: false, changedIds: [...ids], transient: true },
   );
 }
 
@@ -138,7 +138,7 @@ export function applyResizeTransform(
       const next = previous.map((element) => byId.get(element.id) ?? element);
       return updateBoundElements(next, ids, { skipSelf: true });
     },
-    { commit: false, changedIds: [...ids] },
+    { commit: false, changedIds: [...ids], transient: true },
   );
 }
 
@@ -181,7 +181,7 @@ export function applyRotationTransform(
 
       return updateBoundElements(next, ids, { skipSelf: true });
     },
-    { commit: false, changedIds: [...ids] },
+    { commit: false, changedIds: [...ids], transient: true },
   );
 }
 
@@ -244,6 +244,6 @@ export function applyEndpointDragTransform(
 
         return refreshLinearElement(rebound, previous);
       }),
-    { commit: false, changedIds: [arrowId] },
+    { commit: false, changedIds: [arrowId], transient: true },
   );
 }

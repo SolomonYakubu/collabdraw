@@ -38,6 +38,7 @@ describe("applyDragTransform", () => {
     expect(ctx.lastApplied.options).toMatchObject({
       commit: false,
       changedIds: ["dragged"],
+      transient: true,
     });
     expect(ctx.visuals.isTransforming).toBe(true);
   });
@@ -174,7 +175,10 @@ describe("applyResizeTransform", () => {
       height: 150,
     });
     expect(ctx.visuals.activeHandle).toBe("se");
-    expect(ctx.lastApplied.options).toMatchObject({ commit: false });
+    expect(ctx.lastApplied.options).toMatchObject({
+      commit: false,
+      transient: true,
+    });
   });
 
   it("keeps the aspect ratio with shift", () => {
@@ -321,7 +325,10 @@ describe("applyRotationTransform", () => {
     // has not moved at all.
     expect(ctx.find("turned").angle).toBe(0);
     expect(ctx.visuals.activeHandle).toBe("rotate");
-    expect(ctx.lastApplied.options).toMatchObject({ commit: false });
+    expect(ctx.lastApplied.options).toMatchObject({
+      commit: false,
+      transient: true,
+    });
   });
 
   it("adds the turn to the angle the element already had", () => {
@@ -445,6 +452,7 @@ describe("applyEndpointDragTransform", () => {
     expect(ctx.lastApplied.options).toMatchObject({
       commit: false,
       changedIds: ["arrow"],
+      transient: true,
     });
   });
 

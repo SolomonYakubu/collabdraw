@@ -30,8 +30,9 @@ afterEach(() => {
 });
 
 describe("what it listens for", () => {
-  it("registers all three transient events", () => {
+  it("registers the transient events, the join announcement included", () => {
     expect(h.events().sort()).toEqual([
+      "announce-cursor",
       "cursor-position",
       "drawing-state",
       "shape-in-progress",
@@ -56,8 +57,20 @@ describe("cursor-position", () => {
         to: "room:room1",
         event: "cursor-position",
         payload: { userId: "user1", x: 10, y: 20, tag: "Ada" },
+        volatile: true,
       },
     ]);
+  });
+
+  it("relays the cursor volatile, so a slow peer drops it rather than queues it", () => {
+    // Cursors are the highest-frequency event in the room. Queued on a
+    // recipient's backed-up socket they would delay the shape updates behind
+    // them; dropped, they cost a frame of pointer polish.
+    join(h);
+
+    h.fire("cursor-position", { roomId: "room1", userId: "user1", x: 1, y: 2 });
+
+    expect(h.sent("cursor-position")[0].volatile).toBe(true);
   });
 
   it("does not send a peer their own cursor back", () => {
@@ -190,6 +203,86 @@ describe("cursor-position", () => {
   });
 });
 
+describe("announce-cursor", () => {
+  it("relays an announced cursor on the reliable path", () => {
+    /*
+     * Sent once, on purpose, so a peer who has just joined can centre on the
+     * host. A dropped seed is a viewport that never moves, which is why this one
+     * is relayed reliably while ordinary cursor traffic above is volatile.
+     */
+    join(h);
+
+    h.fire("announce-cursor", {
+      roomId: "room1",
+      userId: "user1",
+      x: 10,
+      y: 20,
+      tag: "Ada",
+    });
+
+    expect(h.sent("cursor-position")).toEqual([
+      {
+        to: "room:room1",
+        event: "cursor-position",
+        payload: { userId: "user1", x: 10, y: 20, tag: "Ada" },
+      },
+    ]);
+  });
+
+  it("attributes the announcement to the socket, not the payload", () => {
+    // Otherwise a client could place somebody else's view wherever it liked.
+    join(h);
+
+    h.fire("announce-cursor", {
+      roomId: "room1",
+      userId: "victim",
+      x: 1,
+      y: 2,
+    });
+
+    expect(h.sent("cursor-position")[0].payload.userId).toBe("user1");
+  });
+
+  it("ignores an announcement for a room this socket has not joined", () => {
+    join(h, "room1");
+
+    h.fire("announce-cursor", { roomId: "room2", x: 1, y: 2 });
+
+    expect(h.emitted).toEqual([]);
+  });
+
+  it("drops an announcement with nothing usable to centre on", () => {
+    join(h);
+
+    h.fire("announce-cursor", { roomId: "room1", x: "10", y: 20 });
+    h.fire("announce-cursor", { roomId: "room1", x: 10, y: NaN });
+    h.fire("announce-cursor", { roomId: "room1", y: 20 });
+    h.fire("announce-cursor", undefined);
+
+    expect(h.emitted).toEqual([]);
+  });
+
+  it("clamps a far-away announcement like a moving cursor", () => {
+    join(h);
+
+    h.fire("announce-cursor", { roomId: "room1", x: 1e9, y: -1e9 });
+
+    expect(h.sent("cursor-position")[0].payload).toMatchObject({
+      x: 1e6,
+      y: -1e6,
+    });
+  });
+
+  it("says nothing when the socket has no identity to attribute it to", () => {
+    join(h);
+    delete h.socket.data.userId;
+
+    h.fire("announce-cursor", { roomId: "room1", x: 1, y: 2 });
+
+    expect(h.emitted).toEqual([]);
+  });
+});
+
 describe("shape-in-progress", () => {
   it("relays the preview stroke to the rest of the room", () => {
     join(h);
@@ -205,8 +298,21 @@ describe("shape-in-progress", () => {
         to: "room:room1",
         event: "shape-in-progress",
         payload: { userId: "user1", shape: shape("a", { isInProgress: true }) },
+        volatile: true,
       },
     ]);
+  });
+
+  it("relays the preview volatile, so a missed frame does not delay the commit", () => {
+    join(h);
+
+    h.fire("shape-in-progress", {
+      roomId: "room1",
+      userId: "user1",
+      shape: shape("a"),
+    });
+
+    expect(h.sent("shape-in-progress")[0].volatile).toBe(true);
   });
 
   it("ignores a preview for a room this socket has not joined", () => {

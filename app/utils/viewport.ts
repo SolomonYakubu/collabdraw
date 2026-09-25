@@ -83,6 +83,34 @@ export const zoomAtCenter = (
     y: size.height / 2,
   });
 
+/**
+ * The viewport that puts a world point at the centre of the canvas, keeping the
+ * current zoom.
+ *
+ * This is the join handshake: a newcomer is centred on the host's pointer so
+ * the room is not off screen. The zoom is deliberately left alone — the
+ * newcomer's own zoom is theirs, and copying the host's would make the first
+ * render depend on someone else's browser. Returns the viewport unchanged for a
+ * canvas that has not been measured yet, rather than putting NaN in the scroll.
+ */
+export const centerOnWorldPoint = (
+  viewport: Viewport,
+  point: Point,
+  size: { width: number; height: number },
+): Viewport => {
+  if (size.width <= 0 || size.height <= 0) {
+    return viewport;
+  }
+
+  return {
+    zoom: viewport.zoom,
+    scroll: {
+      x: size.width / (2 * viewport.zoom) - point.x,
+      y: size.height / (2 * viewport.zoom) - point.y,
+    },
+  };
+};
+
 /** A distance in screen pixels expressed in world units at the current zoom. */
 export const screenDistanceToWorld = (
   pixels: number,
