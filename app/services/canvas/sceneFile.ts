@@ -71,8 +71,10 @@ export function parseSceneFile(text: string): SceneFile | null {
     viewport !== null &&
     typeof viewport.zoom === "number" &&
     Number.isFinite(viewport.zoom) &&
-    typeof viewport.scroll?.x === "number" &&
-    typeof viewport.scroll?.y === "number";
+    // `isFinite`, not `typeof`: JSON has no literal for Infinity, but `1e999`
+    // parses to it, and a non-finite scroll is a viewport no client can restore.
+    Number.isFinite(viewport.scroll?.x) &&
+    Number.isFinite(viewport.scroll?.y);
 
   return {
     elements: restoreElements(document.elements),

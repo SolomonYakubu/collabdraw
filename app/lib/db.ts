@@ -261,12 +261,14 @@ export async function saveBoardScene(
   viewport: Viewport | null,
 ): Promise<void> {
   await query(
+    // A soft-deleted board keeps its tombstone: an offline tab flushing its
+    // last scene must not rewrite the row of a board deleted from the gallery.
     `update boards
         set scene = $2::jsonb,
             viewport = $3::jsonb,
             element_count = $4,
             updated_at = now()
-      where id = $1`,
+      where id = $1 and deleted_at is null`,
     [id, JSON.stringify(scene), viewport ? JSON.stringify(viewport) : null, scene.length],
   );
 }

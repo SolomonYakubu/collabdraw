@@ -11,16 +11,26 @@ const {
  * Payloads are validated and clamped before relay.
  */
 function registerCursorHandlers(io, socket) {
+  /*
+   * Identity comes from `socket.data`, never from the payload: taking `userId`
+   * off the wire would let any member attribute their cursor or preview to
+   * somebody else — moving the victim's cursor, or clearing their in-progress
+   * shape. `join-room` stamps it, so an unidentified socket has no name and the
+   * event is dropped (there is nothing to attribute it to).
+   */
+  const senderId = () => socket.data && socket.data.userId;
+
   // Handle cursor position updates (~20-60Hz per active user)
   socket.on("cursor-position", (data) => {
-    const { roomId, userId, x, y, tag } = data || {};
+    const { roomId, x, y, tag } = data || {};
 
     if (!isValidRoomId(roomId)) return;
     if (roomStore.userRooms.get(socket.id) !== roomId) return;
 
+    const userId = senderId();
     const safeX = clampCoordinate(x);
     const safeY = clampCoordinate(y);
-    if (userId === undefined || safeX === undefined || safeY === undefined) {
+    if (!userId || safeX === undefined || safeY === undefined) {
       return;
     }
 
@@ -34,12 +44,13 @@ function registerCursorHandlers(io, socket) {
 
   // Handle in-progress shape updates (live drag preview)
   socket.on("shape-in-progress", (data) => {
-    const { roomId, userId, shape } = data || {};
+    const { roomId, shape } = data || {};
     if (!isValidRoomId(roomId)) return;
     if (roomStore.userRooms.get(socket.id) !== roomId) return;
 
+    const userId = senderId();
     const [safeShape] = sanitizeShapes([shape]) ?? [];
-    if (userId === undefined || !safeShape) return;
+    if (!userId || !safeShape) return;
 
     socket.to(roomId).emit("shape-in-progress", {
       userId,
@@ -49,14 +60,14 @@ function registerCursorHandlers(io, socket) {
 
   // Handle drawing state updates (isDrawing flag for status indicators)
   socket.on("drawing-state", (data) => {
-    const { roomId, userId } = data || {};
+    const { roomId } = data || {};
     if (!isValidRoomId(roomId)) return;
     if (roomStore.userRooms.get(socket.id) !== roomId) return;
 
-    // `userId` is what makes this actionable: the receiver's job is to drop *that*
-    // peer's in-progress preview, and without a name to hang it on the event is
-    // unattributable and does nothing. Same reason the two handlers above bail.
-    if (userId === undefined) return;
+    // The name is what makes this actionable: the receiver's job is to drop
+    // *that* peer's in-progress preview. Same reason the two handlers above bail.
+    const userId = senderId();
+    if (!userId) return;
 
     socket.to(roomId).emit("drawing-state", {
       roomId,

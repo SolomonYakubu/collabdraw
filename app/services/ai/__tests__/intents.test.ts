@@ -133,6 +133,37 @@ describe("parseDrawingIntent", () => {
     expect(intent?.action).toBe("wait");
   });
 
+  it("keeps a decline that carries no drawable payload", () => {
+    // The whole point of "wait" is that it draws nothing, so there is often no
+    // payload to find. Returning null turned the decline into an error.
+    const intent = parseDrawingIntent({
+      kind: "scene",
+      title: "T",
+      summary: "Nothing to add just yet.",
+      action: "wait",
+      scene: { items: [] },
+    });
+
+    expect(intent?.action).toBe("wait");
+    expect(intent?.kind).toBe("scene");
+  });
+
+  it("treats a payload-less decline as a wait, but keeps an empty draw as nothing", () => {
+    expect(
+      parseDrawingIntent({
+        kind: "scene",
+        title: "T",
+        summary: "S",
+        action: "wait",
+      })?.action,
+    ).toBe("wait");
+
+    // Without `action: "wait"`, an empty payload is still nothing drawable.
+    expect(
+      parseDrawingIntent({ kind: "scene", title: "T", summary: "S" }),
+    ).toBeNull();
+  });
+
   it("reads the older replaceCanvas spelling as a replacement", () => {
     const intent = parseDrawingIntent({
       kind: "grid",
@@ -587,6 +618,48 @@ describe("playing on an existing board", () => {
 
     // A different board is a new board, so its separators are drawn.
     expect(elements.filter(isLinearShape)).toHaveLength(14);
+  });
+});
+
+describe("continuing a table", () => {
+  // A table is cell rectangles with bound Text labels, unlike a board's free
+  // text. Both reading and writing used to skip those labels, so the model was
+  // told the table was empty and then wrote a second label over each one.
+  const buildTable = (cells: Array<{ row: number; column: number; text: string }>) =>
+    buildGrid(
+      parseGridSpec({ rows: 2, columns: 2, style: "table", cells })!,
+      { origin: { x: 500, y: 300 } },
+    ).elements;
+
+  it("reads bound cell labels back into the grid description", () => {
+    const grid = detectGrid(buildTable([{ row: 0, column: 0, text: "Name" }]))!;
+
+    expect(grid.cells).toEqual([
+      { row: 0, column: 0, text: "Name", source: "text" },
+    ]);
+  });
+
+  it("adds a new cell label without rewriting the existing one", () => {
+    const table = buildTable([{ row: 0, column: 0, text: "Name" }]);
+    const grid = describeScene(table).grid!;
+
+    const { elements, removedIds } = buildGrid(
+      parseGridSpec({
+        rows: 2,
+        columns: 2,
+        style: "table",
+        cells: [
+          { row: 0, column: 0, text: "Name" },
+          { row: 1, column: 1, text: "Ada" },
+        ],
+      })!,
+      { origin: ORIGIN, existing: table, anchorGrid: grid },
+    );
+
+    // Only the genuinely new label is drawn; the bound one is neither duplicated
+    // nor deleted.
+    expect(textsOf(elements)).toEqual(["Ada"]);
+    expect(removedIds).toEqual([]);
   });
 });
 

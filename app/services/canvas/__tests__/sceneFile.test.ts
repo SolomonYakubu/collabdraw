@@ -73,6 +73,15 @@ describe("parseSceneFile", () => {
     );
     expect(file?.viewport).toBeNull();
   });
+
+  it("rejects a viewport with a non-finite scroll", () => {
+    // `JSON.stringify` cannot emit Infinity, but `JSON.parse` turns a literal
+    // `1e999` into it, and a viewport scrolled to infinity is unrestorable.
+    const file = parseSceneFile(
+      '{"type":"collabdraw","elements":[],"viewport":{"zoom":1,"scroll":{"x":1e999,"y":0}}}',
+    );
+    expect(file?.viewport).toBeNull();
+  });
 });
 
 describe("sceneFileName", () => {

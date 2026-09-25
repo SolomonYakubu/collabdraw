@@ -14,6 +14,8 @@ const shape = (id, extra = {}) => ({ id, tool: "Square", x: 0, y: 0, ...extra })
 
 const join = (h, roomId = "room1", userId = "user1") => {
   h.store.addUserToRoom(roomId, userId, "Ada", h.socket.id);
+  // `join-room` also stamps the socket; the handlers read identity from here.
+  h.socket.data = { userId, roomId, userTag: "Ada" };
 };
 
 let h;
@@ -84,10 +86,30 @@ describe("cursor-position", () => {
     expect(h.emitted).toEqual([]);
   });
 
-  it("says nothing without a user to attribute the cursor to", () => {
+  it("attributes the cursor to the socket, never to the name in the payload", () => {
+    // Otherwise any member could move somebody else's cursor on every screen.
     join(h);
 
-    h.fire("cursor-position", { roomId: "room1", x: 1, y: 2 });
+    h.fire("cursor-position", {
+      roomId: "room1",
+      userId: "victim",
+      x: 1,
+      y: 2,
+    });
+
+    expect(h.sent("cursor-position")[0].payload.userId).toBe("user1");
+  });
+
+  it("says nothing when the socket has no identity to attribute it to", () => {
+    join(h);
+    delete h.socket.data.userId;
+
+    h.fire("cursor-position", {
+      roomId: "room1",
+      userId: "user1",
+      x: 1,
+      y: 2,
+    });
 
     expect(h.emitted).toEqual([]);
   });
@@ -209,11 +231,30 @@ describe("shape-in-progress", () => {
     expect(h.emitted).toEqual([]);
   });
 
-  it("says nothing without a user to attribute the stroke to", () => {
-    // The receiver files previews per peer; an unattributed one has nowhere to go.
+  it("attributes the preview to the socket, not the payload", () => {
+    // A spoofed name here would file the stroke under the victim and clear it
+    // from their canvas, not the sender's.
     join(h);
 
-    h.fire("shape-in-progress", { roomId: "room1", shape: shape("a") });
+    h.fire("shape-in-progress", {
+      roomId: "room1",
+      userId: "victim",
+      shape: shape("a"),
+    });
+
+    expect(h.sent("shape-in-progress")[0].payload.userId).toBe("user1");
+  });
+
+  it("says nothing when the socket has no identity to attribute it to", () => {
+    // The receiver files previews per peer; an unattributed one has nowhere to go.
+    join(h);
+    delete h.socket.data.userId;
+
+    h.fire("shape-in-progress", {
+      roomId: "room1",
+      userId: "user1",
+      shape: shape("a"),
+    });
 
     expect(h.emitted).toEqual([]);
   });
@@ -303,10 +344,27 @@ describe("drawing-state", () => {
     expect(h.emitted).toEqual([]);
   });
 
-  it("says nothing without a user to attribute it to", () => {
+  it("attributes the state to the socket, not the payload", () => {
     join(h);
 
-    h.fire("drawing-state", { roomId: "room1", isDrawing: false });
+    h.fire("drawing-state", {
+      roomId: "room1",
+      userId: "victim",
+      isDrawing: false,
+    });
+
+    expect(h.sent("drawing-state")[0].payload.userId).toBe("user1");
+  });
+
+  it("says nothing when the socket has no identity to attribute it to", () => {
+    join(h);
+    delete h.socket.data.userId;
+
+    h.fire("drawing-state", {
+      roomId: "room1",
+      userId: "user1",
+      isDrawing: false,
+    });
 
     expect(h.emitted).toEqual([]);
   });

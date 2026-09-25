@@ -159,7 +159,19 @@ export const parseDrawingIntent = (
     }
   }
 
-  return candidates[0] ?? null;
+  if (candidates.length > 0) {
+    return candidates[0];
+  }
+
+  // A decline ("wait") draws nothing by design, so it carries no payload for the
+  // loop above to find. Without this the one documented way to answer without
+  // drawing came back as null — and the caller turned it into "nothing
+  // drawable" instead of showing the summary.
+  if (action === "wait") {
+    return { ...envelope, kind: "scene", scene: { items: [] } };
+  }
+
+  return null;
 };
 
 export type {

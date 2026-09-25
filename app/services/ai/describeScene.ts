@@ -349,6 +349,30 @@ const readGridCells = (
   const structure = new Set(grid.structureIds);
   const cells: DetectedCell[] = [];
 
+  // A table's labels are bound Text *inside* its cell rectangles, so the mark
+  // loop below skips them as structure. Read them back here: without this a
+  // continuation is told every cell is empty and re-emits the whole table.
+  if (grid.style === "table") {
+    for (const element of elements) {
+      if (element.isDeleted || !structure.has(element.id)) {
+        continue;
+      }
+
+      const label = getBoundLabel(element, elements)?.text.trim();
+      if (!label) {
+        continue;
+      }
+
+      const column = Math.round((element.x - grid.x) / grid.cellWidth);
+      const row = Math.round((element.y - grid.y) / grid.cellHeight);
+      if (row < 0 || column < 0 || row >= grid.rows || column >= grid.columns) {
+        continue;
+      }
+
+      cells.push({ row, column, text: label, source: "text" });
+    }
+  }
+
   const describeMark = (
     element: Shape,
   ): { text: string; source: CellSource } | null => {

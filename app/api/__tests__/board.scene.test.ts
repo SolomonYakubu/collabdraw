@@ -70,7 +70,7 @@ describe("saving a scene", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true });
     expect(pg.flatten(write().text)).toBe(
-      "update boards set scene = $2::jsonb, viewport = $3::jsonb, element_count = $4, updated_at = now() where id = $1",
+      "update boards set scene = $2::jsonb, viewport = $3::jsonb, element_count = $4, updated_at = now() where id = $1 and deleted_at is null",
     );
     expect(write().params[0]).toBe("b1");
     expect(JSON.parse(write().params[1] as string)).toHaveLength(2);

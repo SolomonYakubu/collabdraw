@@ -16,6 +16,9 @@ import { clientIp, isAllowedRateLimit } from "../../lib/rateLimit";
 import { restoreElements } from "../../services/canvas/elements";
 import type { Shape, Viewport } from "../../types/shapes";
 
+/** Declared-length ceiling, checked before the body is read into memory. */
+const MAX_BODY_BYTES = 6 * 1024 * 1024;
+
 /**
  * POST /api/boards — create a board owned by the caller's device.
  *
@@ -40,6 +43,15 @@ export async function POST(request: NextRequest) {
     const ip = clientIp(request);
     if (!(await isAllowedRateLimit(`board-create:${ip}`, 30, 60))) {
       return NextResponse.json({ error: "Too many requests." }, { status: 429 });
+    }
+
+    // Turn an oversized body away on its declared length, before buffering it.
+    const contentLength = Number(request.headers.get("content-length") ?? "0");
+    if (contentLength > MAX_BODY_BYTES) {
+      return NextResponse.json(
+        { error: "Request body is too large." },
+        { status: 413 },
+      );
     }
 
     let title: string | undefined;

@@ -161,9 +161,8 @@ const updateExistingGrid = (
         continue;
       }
 
-      if (element.tool === "Text" && (element as TextShape).containerId) {
-        continue;
-      }
+      const isBoundLabel =
+        element.tool === "Text" && Boolean((element as TextShape).containerId);
 
       const bounds = getElementBounds(element);
       const centreX = bounds.x + bounds.width / 2;
@@ -178,9 +177,13 @@ const updateExistingGrid = (
       }
 
       const replaceable =
-        element.tool === "Text" && Boolean((element as TextShape).text.trim());
+        element.tool === "Text" &&
+        !isBoundLabel &&
+        Boolean((element as TextShape).text.trim());
 
-      // A hand-drawn mark wins: it is the one that must survive.
+      // A hand-drawn mark — or a table cell's bound label — wins: it is the one
+      // that must survive. Rewriting a bound label in place is a separate
+      // problem; deleting it and adding free text would lose the binding.
       if (!replaceable) {
         return { element, replaceable: false };
       }

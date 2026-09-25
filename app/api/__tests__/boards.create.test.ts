@@ -224,6 +224,26 @@ describe("a request it will not save", () => {
     expect(pg.queries).toEqual([]);
   });
 
+  it("refuses an oversized body on its declared length alone", async () => {
+    // Turned away before it is buffered; the scene cap inside the body is only
+    // useful if the body does not have to be read to discover it.
+    const oversized = request();
+    Object.defineProperty(oversized, "headers", {
+      value: new Headers({
+        "content-type": "application/json",
+        "content-length": String(6 * 1024 * 1024 + 1),
+      }),
+    });
+
+    const response = await POST(oversized);
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({
+      error: "Request body is too large.",
+    });
+    expect(pg.queries).toEqual([]);
+  });
+
   it("counts board creation per client address", async () => {
     await POST(request(undefined, { "x-forwarded-for": "203.0.113.7, 10.0.0.1" }));
 
