@@ -329,6 +329,25 @@ describe("canvas-state-response", () => {
     expect(h.sent("canvas-state-sync")[0].payload.shapes).toBeNull();
   });
 
+  it("does not cache an empty answer as the room's authoritative scene", () => {
+    // A peer that answers before it has hydrated sends nothing. Caching that as
+    // an empty scene would tell every later joiner the room is empty and skip
+    // the peer request that would have found the real drawing.
+    join(h);
+    asker(h);
+
+    h.fire("canvas-state-response", {
+      roomId: "room1",
+      targetUserId: "user2",
+      userId: "user1",
+      shapes: [],
+    });
+
+    expect(h.store.hasCanvasState("room1")).toBe(false);
+    expect(h.roomState.scheduleFlush).not.toHaveBeenCalled();
+    expect(h.sent("canvas-state-sync")[0].payload.shapes).toBeNull();
+  });
+
   it("caps how much one response can carry", () => {
     // `sanitizeShapes` stops at 500 per payload, below the 2000 a room may hold,
     // so that is the cap that actually bites here.

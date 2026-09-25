@@ -45,20 +45,33 @@ function registerCanvasHandlers(io, socket) {
     if (!isValidRoomId(roomId)) return;
     if (roomStore.userRooms.get(socket.id) !== roomId) return;
 
+    const isFullUpdate = Boolean(fullUpdate);
     const safeShapes = sanitizeShapes(shapes);
     const safeDeleted = sanitizeDeletedIds(deletedShapeIds);
 
-    if (!safeShapes && !safeDeleted) return;
+    // A full update that is deliberately empty is a clear (undo-to-empty), and
+    // the one payload `sanitizeShapes` maps to null that still has to act. Every
+    // other empty array — a partial update, a peer's state response — stays a
+    // no-op, so a peer answering before it hydrated cannot blank the room.
+    const clearsScene =
+      isFullUpdate && Array.isArray(shapes) && shapes.length === 0;
 
-    roomStore.updateCanvasState(roomId, safeShapes, safeDeleted, Boolean(fullUpdate));
+    if (!safeShapes && !safeDeleted && !clearsScene) return;
+
+    roomStore.updateCanvasState(
+      roomId,
+      clearsScene ? [] : safeShapes,
+      safeDeleted,
+      isFullUpdate,
+    );
     scheduleFlush(roomId, roomStore.getCanvasState(roomId) || []);
 
     // Forward only the sanitized fields to all other clients in the room.
     socket.to(roomId).emit('canvas-update', {
       roomId,
-      shapes: safeShapes,
+      shapes: clearsScene ? [] : safeShapes,
       deletedShapeIds: safeDeleted,
-      fullUpdate: Boolean(fullUpdate),
+      fullUpdate: isFullUpdate,
     });
   });
 }

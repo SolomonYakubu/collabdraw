@@ -26,11 +26,13 @@ const isPlainObject = (value) =>
 
 /**
  * Keep only plain-object shapes, drop oversized entries, and cap the count.
+ * Returns null when nothing usable remains.
  *
- * Returns null when the input is not an array or when every entry was junk, but
- * preserves a deliberately empty array as `[]`: a client that undoes its last
- * shape sends `shapes: []` with `fullUpdate`, and collapsing that to null would
- * drop the one message that is supposed to clear every peer's canvas.
+ * An empty array is null here on purpose. It is used for the two payloads that
+ * are *not* an authoritative clear — a peer's state response and a partial
+ * update — and treating those as an empty scene would let a peer that answered
+ * before it hydrated blank the room. The one message that does mean "clear",
+ * `fullUpdate: true`, is handled explicitly in `canvasHandler`.
  */
 const sanitizeShapes = (shapes) => {
   if (!Array.isArray(shapes)) return null;
@@ -48,8 +50,7 @@ const sanitizeShapes = (shapes) => {
     cleaned.push(shape);
   }
 
-  if (cleaned.length > 0) return cleaned;
-  return shapes.length === 0 ? [] : null;
+  return cleaned.length > 0 ? cleaned : null;
 };
 
 /** Cap an array of deleted shape ids to strings of bounded length. */

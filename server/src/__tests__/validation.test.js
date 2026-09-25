@@ -25,10 +25,10 @@ describe("sanitizeShapes", () => {
     expect(sanitizeShapes("nope")).toBeNull();
   });
 
-  it("keeps a deliberately empty array, but rejects an all-junk one", () => {
-    // An empty array is a real message — it is how undo-to-empty and clear are
-    // broadcast — while an array of garbage is not.
-    expect(sanitizeShapes([])).toEqual([]);
+  it("returns null rather than an empty array when nothing survives", () => {
+    // An empty array is only meaningful as a `fullUpdate` clear, which
+    // `canvasHandler` handles explicitly; everywhere else it is a non-answer.
+    expect(sanitizeShapes([])).toBeNull();
     expect(sanitizeShapes([1, "x", null, []])).toBeNull();
   });
 
