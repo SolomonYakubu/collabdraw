@@ -106,11 +106,32 @@ export const wrapText = (
   return wrapped;
 };
 
+/**
+ * Wrapped lines, keyed on the element object.
+ *
+ * Elements are immutable — every edit goes through `mutateElement`, which
+ * returns a new object — so the object is an exact cache key, and a WeakMap lets
+ * superseded versions go. Without this, a scene of labelled boxes re-wrapped
+ * every label on every repaint, because the whole element layer is redrawn when
+ * any one element moves.
+ */
+const textLinesCache = new WeakMap<TextShape, string[]>();
+
 /** Lines as they will actually be rendered for this element. */
-export const getTextLines = (element: TextShape): string[] =>
-  element.containerId && element.width > 0
-    ? wrapText(element.text, element.width, element.fontSize, element.fontFamily)
-    : splitLines(element.text);
+export const getTextLines = (element: TextShape): string[] => {
+  const cached = textLinesCache.get(element);
+  if (cached) {
+    return cached;
+  }
+
+  const lines =
+    element.containerId && element.width > 0
+      ? wrapText(element.text, element.width, element.fontSize, element.fontFamily)
+      : splitLines(element.text);
+
+  textLinesCache.set(element, lines);
+  return lines;
+};
 
 /** Intrinsic size of a text element's content. */
 export const measureTextElement = (
