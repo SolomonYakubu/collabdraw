@@ -27,12 +27,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 interface FakeSocket {
   connected: boolean;
   /** Every message the client sent, in order. */
-  sent: Array<{ event: string; payload: Record<string, unknown> }>;
+  sent: Array<{
+    event: string;
+    payload: Record<string, unknown>;
+    /** Volatile sends are dropped rather than queued when the link backs up. */
+    volatile?: boolean;
+  }>;
   listeners: Map<string, (payload: unknown) => void>;
   teardowns: number;
   disconnects: number;
   on: (event: string, handler: (payload: unknown) => void) => void;
   emit: (event: string, payload: Record<string, unknown>) => void;
+  volatile: { emit: (event: string, payload: Record<string, unknown>) => void };
   removeAllListeners: () => void;
   disconnect: () => void;
 }
@@ -53,6 +59,11 @@ const createFakeSocket = (): FakeSocket => {
     },
     emit: (event, payload) => {
       socket.sent.push({ event, payload });
+    },
+    volatile: {
+      emit: (event, payload) => {
+        socket.sent.push({ event, payload, volatile: true });
+      },
     },
     removeAllListeners: () => {
       socket.teardowns += 1;
@@ -78,6 +89,9 @@ vi.mock("socket.io-client", () => ({
 import {
   CollaborationContextProvider,
   useCollaborationContext,
+  ELEMENT_COALESCE_MS,
+  FREEHAND_FULL_EVERY,
+  PENDING_THROTTLE_MS,
   type CollaborationEventHandlers,
 } from "../CollaborationContext";
 import {
@@ -819,6 +833,67 @@ describe("what other people are drawing", () => {
     expect(text("drawing")).toBe("");
   });
 
+  it("appends a freehand increment to the copy it already holds", () => {
+    // A long stroke arrives in slices; holding the whole thing on screen costs
+    // the sender the whole stroke again on every tick.
+    mountInRoom();
+    goOnline();
+
+    deliver("shape-in-progress", {
+      userId: "p1",
+      shape: { id: "f1", tool: "Freehand", points: [0, 0, 10, 10] },
+    });
+    deliver("shape-in-progress", {
+      userId: "p1",
+      shape: { id: "f1", tool: "Freehand", points: [20, 5] },
+      pointsOffset: 4,
+    });
+
+    const stroke = api.remoteInProgress.p1 as {
+      points: number[];
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      isInProgress: boolean;
+    };
+    expect(stroke.points).toEqual([0, 0, 10, 10, 20, 5]);
+    // The increment described only its own points, so the box the renderer culls
+    // on has to grow to cover the appended tail.
+    expect(stroke).toMatchObject({ x: 0, y: 0, width: 20, height: 10 });
+    expect(stroke.isInProgress).toBe(true);
+  });
+
+  it("ignores an increment whose base it does not hold", () => {
+    // The base snapshot travelled over a volatile send and was dropped. Applying
+    // the tail to nothing would draw a fragment; the next full snapshot (or the
+    // committed element) is authoritative.
+    mountInRoom();
+    goOnline();
+    deliver("shape-in-progress", { userId: "p1", shape: wireShape("s1") });
+
+    deliver("shape-in-progress", {
+      userId: "p1",
+      shape: { id: "f1", tool: "Freehand", points: [20, 5] },
+      pointsOffset: 4,
+    });
+
+    expect(api.remoteInProgress.p1).toMatchObject({ id: "s1" });
+  });
+
+  it("ignores an increment for a stroke it has never seen", () => {
+    mountInRoom();
+    goOnline();
+
+    deliver("shape-in-progress", {
+      userId: "p1",
+      shape: { id: "f1", tool: "Freehand", points: [20, 5] },
+      pointsOffset: 4,
+    });
+
+    expect(text("drawing")).toBe("");
+  });
+
   it("clears it when the peer says the stroke is over", () => {
     // The finished shape arrives separately as a canvas update; leaving the
     // in-progress copy up draws it twice, the staler one on top.
@@ -1252,6 +1327,178 @@ describe("what this client sends", () => {
       { roomId: "room1", userId: ME, isDrawing: false },
     ]);
     expect(sentOn("shape-in-progress")).toHaveLength(2);
+  });
+
+  it("marks cursors and in-progress previews volatile, so a slow link drops them", () => {
+    // A cursor position or a half-drawn stroke from a moment ago is worth less
+    // than the messages stuck behind it on a backed-up socket; queuing it would
+    // delay everything else. State changes are not droppable.
+    mountInRoom();
+    goOnline();
+
+    act(() => {
+      api.sendCursor({ x: 1, y: 1 });
+      api.sendPendingElement(square("s1"));
+    });
+    act(() => {
+      api.sendPendingElement(null);
+    });
+
+    const messages = socket().sent;
+    expect(messages.find((m) => m.event === "cursor-position")?.volatile).toBe(true);
+    expect(messages.find((m) => m.event === "shape-in-progress")?.volatile).toBe(true);
+    expect(messages.find((m) => m.event === "drawing-state")?.volatile).toBeUndefined();
+  });
+
+  it("sends a freehand stroke whole first, then only the new points", () => {
+    /*
+     * The stroke grew by two numbers a move but was sent whole: a long scribble
+     * paid for the entire stroke again every 40ms.
+     */
+    mountInRoom();
+    goOnline();
+    const stroke = (points: number[]) =>
+      createElement("Freehand", { id: "f1", points })!;
+
+    act(() => {
+      api.sendPendingElement(stroke([0, 0, 10, 10]));
+    });
+    advance(PENDING_THROTTLE_MS);
+    act(() => {
+      api.sendPendingElement(stroke([0, 0, 10, 10, 20, 5, 30, 8]));
+    });
+
+    expect(sentOn("shape-in-progress")).toHaveLength(2);
+    const [full, delta] = sentOn("shape-in-progress");
+    expect(full.pointsOffset).toBeUndefined();
+    expect((full.shape as { points: number[] }).points).toEqual([0, 0, 10, 10]);
+    // The offset is how many flat values the receiver should already hold:
+    // the first stroke sent had two points, i.e. four values.
+    expect(delta.pointsOffset).toBe(4);
+    expect((delta.shape as { points: number[] }).points).toEqual([20, 5, 30, 8]);
+  });
+
+  it("re-anchors a long freehand stroke with a full snapshot every so often", () => {
+    // A delta dropped by a volatile send would otherwise leave a permanent hole
+    // in the preview; the periodic snapshot bounds what a drop costs.
+    mountInRoom();
+    goOnline();
+    const stroke = (points: number[]) =>
+      createElement("Freehand", { id: "f1", points })!;
+
+    act(() => {
+      api.sendPendingElement(stroke([0, 0]));
+    });
+    for (let i = 1; i <= FREEHAND_FULL_EVERY + 1; i += 1) {
+      advance(PENDING_THROTTLE_MS);
+      act(() => {
+        api.sendPendingElement(stroke([0, 0, ...Array.from({ length: i * 2 }, (_, j) => j)]));
+      });
+    }
+
+    const sends = sentOn("shape-in-progress");
+    expect(sends).toHaveLength(FREEHAND_FULL_EVERY + 2);
+    // The last one is a full snapshot again, not a delta.
+    expect(sends.at(-1)!.pointsOffset).toBeUndefined();
+    expect(
+      (sends.at(-1)!.shape as { points: number[] }).points,
+    ).toHaveLength(2 + (FREEHAND_FULL_EVERY + 1) * 2);
+  });
+
+  it("folds a burst of incremental updates into one message, first going out at once", () => {
+    // A drag applies on every pointer move; folding the rest of each frame's
+    // worth into the trailing send is what keeps a 120Hz pointer from being a
+    // 120-message-per-second room.
+    mountInRoom();
+    goOnline();
+
+    act(() => {
+      api.sendElements([square("s1")]);
+      api.sendElements([square("s2")]);
+      api.sendElements([square("s3")]);
+    });
+
+    expect(sentOn("canvas-update")).toHaveLength(1);
+    const first = sentOn("canvas-update")[0] as { shapes: unknown[] };
+    expect(
+      (first.shapes as Array<{ id: string }>).map((s) => s.id),
+    ).toEqual(["s1"]);
+
+    advance(ELEMENT_COALESCE_MS + 1);
+    expect(sentOn("canvas-update")).toHaveLength(2);
+    const second = sentOn("canvas-update")[1] as { shapes: unknown[] };
+    expect(
+      (second.shapes as Array<{ id: string }>).map((s) => s.id),
+    ).toEqual(["s2", "s3"]);
+  });
+
+  it("carries the latest state of an element touched twice inside a window", () => {
+    mountInRoom();
+    goOnline();
+    const moved = (x: number) =>
+      createElement("Square", { id: "s1", x, y: 0, width: 10, height: 10 })!;
+
+    act(() => {
+      api.sendElements([moved(0)]);
+      api.sendElements([moved(40)]);
+    });
+    advance(ELEMENT_COALESCE_MS + 1);
+
+    const trailing = sentOn("canvas-update").at(-1)! as {
+      shapes: Array<{ id: string; x: number }>;
+    };
+    expect(trailing.shapes).toHaveLength(1);
+    expect(trailing.shapes[0].id).toBe("s1");
+    expect(trailing.shapes[0].x).toBe(40);
+  });
+
+  it("drops queued incremental updates when a full scene goes out", () => {
+    // The full scene replaces everything a peer holds; re-applying a queued
+    // element afterwards would put an older shape on top of it.
+    mountInRoom();
+    goOnline();
+
+    act(() => {
+      api.sendElements([square("s1")]);
+      api.sendElements([square("s2")]);
+      api.sendScene([square("s1"), square("s2"), square("s3")]);
+    });
+    advance(ELEMENT_COALESCE_MS + 1);
+
+    const messages = sentOn("canvas-update") as Array<{
+      shapes: unknown[];
+      fullUpdate?: boolean;
+    }>;
+    expect(messages).toHaveLength(2);
+    expect(
+      (messages[0].shapes as Array<{ id: string }>).map((s) => s.id),
+    ).toEqual(["s1"]);
+    expect(messages[1].fullUpdate).toBe(true);
+  });
+
+  it("does not resurrect an element deleted while its update was queued", () => {
+    mountInRoom();
+    goOnline();
+
+    act(() => {
+      api.sendElements([square("s1")]);
+      api.sendElements([square("s2")]);
+      api.sendDeletions(["s2"]);
+    });
+    advance(ELEMENT_COALESCE_MS + 1);
+
+    // The queue emptied, so only the leading update and the deletion were sent.
+    const messages = sentOn("canvas-update") as Array<{
+      shapes?: unknown[];
+      deletedShapeIds?: unknown;
+    }>;
+    const withShapes = messages.filter((m) => m.shapes);
+    expect(withShapes).toHaveLength(1);
+    expect(
+      messages.some(
+        (m) => (m.deletedShapeIds as string[] | undefined)?.[0] === "s2",
+      ),
+    ).toBe(true);
   });
 
   it("tells the room when you rename yourself", () => {

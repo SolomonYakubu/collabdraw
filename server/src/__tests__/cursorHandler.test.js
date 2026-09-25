@@ -295,6 +295,54 @@ describe("shape-in-progress", () => {
 
     expect(h.emitted).toEqual([]);
   });
+
+  it("relays the freehand offset an increment carries", () => {
+    // A long stroke travels in slices against the copy the receiver holds; the
+    // offset is what makes the receiver able to tell whether it holds the base.
+    join(h);
+
+    h.fire("shape-in-progress", {
+      roomId: "room1",
+      userId: "user1",
+      shape: shape("a", { tool: "Freehand", points: [8, 9] }),
+      pointsOffset: 4,
+    });
+
+    expect(h.sent("shape-in-progress")[0].payload).toMatchObject({
+      userId: "user1",
+      pointsOffset: 4,
+    });
+  });
+
+  it("relays no offset when none was sent, or a nonsense one", () => {
+    // An absent offset is a full snapshot, which is what the receiver treats it
+    // as; a zero or non-number one is a full snapshot too.
+    join(h);
+
+    h.fire("shape-in-progress", {
+      roomId: "room1",
+      userId: "user1",
+      shape: shape("a"),
+    });
+    h.fire("shape-in-progress", {
+      roomId: "room1",
+      userId: "user1",
+      shape: shape("b"),
+      pointsOffset: 0,
+    });
+    h.fire("shape-in-progress", {
+      roomId: "room1",
+      userId: "user1",
+      shape: shape("c"),
+      pointsOffset: "4",
+    });
+
+    expect(h.sent("shape-in-progress").map((e) => e.payload.pointsOffset)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
 });
 
 describe("drawing-state", () => {

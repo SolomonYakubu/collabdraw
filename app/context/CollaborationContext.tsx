@@ -31,8 +31,9 @@ import React, {
 import { io, type Socket } from "socket.io-client";
 
 import type { Point, Shape } from "../types/shapes";
+import { isFreehandShape } from "../types/shapes";
 import type { CursorPositionsMap, User } from "../types/collaboration";
-import { restoreElements } from "../services/canvas/elements";
+import { getPointsBounds, restoreElements } from "../services/canvas/elements";
 import {
   USER_NAME_KEY,
   normalizeUserName,
@@ -43,8 +44,27 @@ import {
 import { subscribeToStorageKey } from "../services/storageSync";
 
 const CURSOR_THROTTLE_MS = 50;
-const PENDING_THROTTLE_MS = 40;
+export const PENDING_THROTTLE_MS = 40;
 const STALE_CURSOR_MS = 10_000;
+
+/**
+ * How long a burst of incremental element updates is folded into one message.
+ *
+ * A drag applies its transform on every pointer move, and a pointing device
+ * reports far faster than a screen paints — 120Hz trackpads are ordinary. Without
+ * coalescing that is a `canvas-update` per move, each fanned out to everybody in
+ * the room. The first update of a burst still goes out at once (a peer's view
+ * should start moving with no added latency); everything after it accumulates
+ * until the window closes, and what is flushed is the latest state per element.
+ */
+export const ELEMENT_COALESCE_MS = 33;
+
+/**
+ * Full freehand snapshots between incremental ones. A delta dropped by a volatile
+ * send would otherwise leave a permanent hole in the preview; re-anchoring every
+ * so often bounds what a drop costs to well under a second of stroke.
+ */
+export const FREEHAND_FULL_EVERY = 20;
 
 /**
  * Why the room's drawing is not being kept, in the socket server's own words
@@ -185,6 +205,15 @@ export const CollaborationContextProvider: React.FC<{
   const lastCursorSentRef = useRef(0);
   const lastPendingSentRef = useRef(0);
   const copyTimerRef = useRef<number | null>(null);
+  /** Incremental updates waiting to be folded into one `canvas-update`. */
+  const pendingElementsRef = useRef(new Map<string, Shape>());
+  const elementTimerRef = useRef<number | null>(null);
+  /** Where the last in-progress freehand send stopped, per stroke. */
+  const lastPendingPointsRef = useRef<{
+    id: string;
+    sentPoints: number;
+    deltas: number;
+  } | null>(null);
 
   /** Never called during SSR — every caller is inside an effect or a handler. */
   const currentUserName = useCallback((): string => {
@@ -210,6 +239,19 @@ export const CollaborationContextProvider: React.FC<{
   const setEventHandlers = useCallback(
     (handlers: CollaborationEventHandlers) => {
       handlersRef.current = handlers;
+    },
+    [],
+  );
+
+  // The provider going away must not leave a coalescing timer behind; what it
+  // would send is stale, and the emit it reaches is a no-op by then anyway.
+  useEffect(
+    () => () => {
+      if (elementTimerRef.current !== null) {
+        window.clearTimeout(elementTimerRef.current);
+        elementTimerRef.current = null;
+      }
+      pendingElementsRef.current.clear();
     },
     [],
   );
@@ -403,7 +445,11 @@ export const CollaborationContextProvider: React.FC<{
 
     socket.on(
       "shape-in-progress",
-      (data: { userId?: string; shape?: unknown }) => {
+      (data: {
+        userId?: string;
+        shape?: unknown;
+        pointsOffset?: unknown;
+      }) => {
         if (isSelf(data?.userId) || typeof data?.userId !== "string") {
           return;
         }
@@ -416,6 +462,49 @@ export const CollaborationContextProvider: React.FC<{
             delete next[data.userId as string];
             return next;
           }
+
+          /*
+           * A freehand stroke arrives in increments against the copy already on
+           * screen, so a long scribble costs two numbers a tick rather than the
+           * whole stroke. An increment only appends when what we hold is exactly
+           * the base the sender thinks we hold; otherwise — the base snapshot was
+           * dropped by a volatile send, or this peer joined mid-stroke — it is
+           * ignored, and the next full snapshot or the committed element is
+           * authoritative.
+           */
+          const offset =
+            typeof data?.pointsOffset === "number" &&
+            Number.isFinite(data.pointsOffset)
+              ? data.pointsOffset
+              : 0;
+
+          if (offset > 0) {
+            const base = current[data.userId as string];
+            if (
+              base &&
+              base.id === element.id &&
+              isFreehandShape(base) &&
+              isFreehandShape(element) &&
+              base.points.length === offset
+            ) {
+              const points = [...base.points, ...element.points];
+              // The increment arrived describing only its own points, so the
+              // box it carries no longer covers the stroke; the renderer culls
+              // on that box, so it has to grow with the stroke.
+              const box = getPointsBounds(points);
+              return {
+                ...current,
+                [data.userId as string]: {
+                  ...element,
+                  points,
+                  ...box,
+                  isInProgress: true,
+                },
+              };
+            }
+            return current;
+          }
+
           return {
             ...current,
             [data.userId as string]: { ...element, isInProgress: true },
@@ -508,7 +597,11 @@ export const CollaborationContextProvider: React.FC<{
   );
 
   const emit = useCallback(
-    (event: string, payload: Record<string, unknown>) => {
+    (
+      event: string,
+      payload: Record<string, unknown>,
+      { volatile = false }: { volatile?: boolean } = {},
+    ) => {
       const socket = socketRef.current;
       const identity = identityRef.current;
 
@@ -516,11 +609,21 @@ export const CollaborationContextProvider: React.FC<{
         return;
       }
 
-      socket.emit(event, {
+      const envelope = {
         roomId: identity.roomId,
         userId: identity.userId,
         ...payload,
-      });
+      };
+
+      // A volatile send is dropped rather than queued when the link is backed
+      // up: a cursor position or a half-drawn stroke from a moment ago is worth
+      // less than the messages stuck behind it.
+      if (volatile) {
+        socket.volatile.emit(event, envelope);
+        return;
+      }
+
+      socket.emit(event, envelope);
     },
     [],
   );
@@ -596,17 +699,38 @@ export const CollaborationContextProvider: React.FC<{
       }
       lastCursorSentRef.current = now;
 
-      emit("cursor-position", {
-        x: point.x,
-        y: point.y,
-        tag: identityRef.current?.tag,
-      });
+      // Volatile: a cursor position that missed its turn is stale the moment the
+      // next one is due, and queuing it would delay every message behind it.
+      emit("cursor-position", { x: point.x, y: point.y, tag: identityRef.current?.tag }, { volatile: true });
     },
     [emit],
   );
 
+  /** Whatever accumulated during the coalescing window, as one partial update. */
+  const flushElements = useCallback(() => {
+    if (elementTimerRef.current !== null) {
+      window.clearTimeout(elementTimerRef.current);
+      elementTimerRef.current = null;
+    }
+
+    const pending = pendingElementsRef.current;
+    if (pending.size === 0) {
+      return;
+    }
+    pendingElementsRef.current = new Map();
+    emit("canvas-update", { shapes: [...pending.values()], isPartial: true });
+  }, [emit]);
+
   const sendScene = useCallback(
     (elements: Shape[]) => {
+      // A full scene replaces everything a peer holds, so an incremental update
+      // still in flight would only re-apply an older element on top of it.
+      if (elementTimerRef.current !== null) {
+        window.clearTimeout(elementTimerRef.current);
+        elementTimerRef.current = null;
+      }
+      pendingElementsRef.current.clear();
+
       emit("canvas-update", { shapes: elements, fullUpdate: true });
     },
     [emit],
@@ -617,15 +741,37 @@ export const CollaborationContextProvider: React.FC<{
       if (elements.length === 0) {
         return;
       }
-      emit("canvas-update", { shapes: elements, isPartial: true });
+
+      const pending = pendingElementsRef.current;
+      for (const element of elements) {
+        pending.set(element.id, element);
+      }
+
+      if (elementTimerRef.current !== null) {
+        // A trailing send is already scheduled; this call only refreshed what it
+        // will carry.
+        return;
+      }
+
+      // Leading edge: the first update of a burst goes out at once.
+      flushElements();
+      elementTimerRef.current = window.setTimeout(() => {
+        elementTimerRef.current = null;
+        flushElements();
+      }, ELEMENT_COALESCE_MS);
     },
-    [emit],
+    [flushElements],
   );
 
   const sendDeletions = useCallback(
     (ids: string[]) => {
       if (ids.length === 0) {
         return;
+      }
+      // An element erased while its update is still queued must not be
+      // resurrected by that queue when it flushes.
+      for (const id of ids) {
+        pendingElementsRef.current.delete(id);
       }
       emit("canvas-update", { deletedShapeIds: ids, isPartial: true });
     },
@@ -637,6 +783,7 @@ export const CollaborationContextProvider: React.FC<{
       if (!element) {
         emit("drawing-state", { isDrawing: false });
         lastPendingSentRef.current = 0;
+        lastPendingPointsRef.current = null;
         return;
       }
 
@@ -646,7 +793,64 @@ export const CollaborationContextProvider: React.FC<{
       }
       lastPendingSentRef.current = now;
 
-      emit("shape-in-progress", { shape: { ...element, isInProgress: true } });
+      /*
+       * A freehand stroke grows by two numbers a move, but was sent whole — so a
+       * long scribble paid for the entire stroke again every 40ms, O(n²) bytes
+       * over the gesture. Past the first tick only the points added since the
+       * last send go out, tagged with how many the receiver should already hold;
+       * and every so often a full snapshot re-anchors the preview, so a delta
+       * dropped by a volatile send costs a fraction of a second rather than the
+       * rest of the stroke. Everything else has no array to grow: send it whole.
+       */
+      if (isFreehandShape(element)) {
+        const total = element.points.length;
+        const last = lastPendingPointsRef.current;
+        const continuing = last !== null && last.id === element.id;
+
+        if (
+          continuing &&
+          last.sentPoints > 0 &&
+          total > last.sentPoints &&
+          last.deltas < FREEHAND_FULL_EVERY
+        ) {
+          emit(
+            "shape-in-progress",
+            {
+              shape: {
+                ...element,
+                points: element.points.slice(last.sentPoints),
+                isInProgress: true,
+              },
+              pointsOffset: last.sentPoints,
+            },
+            { volatile: true },
+          );
+          lastPendingPointsRef.current = {
+            id: element.id,
+            sentPoints: total,
+            deltas: last.deltas + 1,
+          };
+          return;
+        }
+
+        emit(
+          "shape-in-progress",
+          { shape: { ...element, isInProgress: true } },
+          { volatile: true },
+        );
+        lastPendingPointsRef.current = {
+          id: element.id,
+          sentPoints: total,
+          deltas: 0,
+        };
+        return;
+      }
+
+      emit(
+        "shape-in-progress",
+        { shape: { ...element, isInProgress: true } },
+        { volatile: true },
+      );
     },
     [emit],
   );

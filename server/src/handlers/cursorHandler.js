@@ -44,7 +44,7 @@ function registerCursorHandlers(io, socket) {
 
   // Handle in-progress shape updates (live drag preview)
   socket.on("shape-in-progress", (data) => {
-    const { roomId, shape } = data || {};
+    const { roomId, shape, pointsOffset } = data || {};
     if (!isValidRoomId(roomId)) return;
     if (roomStore.userRooms.get(socket.id) !== roomId) return;
 
@@ -52,10 +52,20 @@ function registerCursorHandlers(io, socket) {
     const [safeShape] = sanitizeShapes([shape]) ?? [];
     if (!userId || !safeShape) return;
 
-    socket.to(roomId).emit("shape-in-progress", {
-      userId,
-      shape: safeShape,
-    });
+    const payload = { userId, shape: safeShape };
+
+    // A freehand stroke travels as increments against the copy the receiver
+    // already holds; the offset is how many flat point values it should have.
+    // Only forward it when it is a real offset — absent means a full snapshot.
+    if (
+      typeof pointsOffset === "number" &&
+      Number.isFinite(pointsOffset) &&
+      pointsOffset > 0
+    ) {
+      payload.pointsOffset = pointsOffset;
+    }
+
+    socket.to(roomId).emit("shape-in-progress", payload);
   });
 
   // Handle drawing state updates (isDrawing flag for status indicators)
