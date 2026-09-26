@@ -110,7 +110,9 @@ export const parseDrawingIntent = (
 
   const envelope: IntentEnvelope = {
     title: asString(raw.title).trim().slice(0, 80),
-    summary: asString(raw.summary).trim().slice(0, 400),
+    // Long enough for the explanation a "teach me" request asks for; short
+    // enough that a runaway reply cannot flood the panel.
+    summary: asString(raw.summary).trim().slice(0, 4000),
     placement,
     action,
   };

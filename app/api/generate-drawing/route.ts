@@ -75,22 +75,22 @@ const RESPONSE_SCHEMA: Record<string, unknown> = {
       type: "string",
       description: "A short name for the drawing.",
     },
+    action: {
+      type: "string",
+      enum: ["draw", "wait"],
+      description:
+        "Whether to touch the canvas at all. 'wait' when nothing you could draw would help right now — the user is still arranging their own work, or asked a question about what is there whose answer needs no drawing. With 'wait' your summary is still shown, but nothing is drawn. Default 'draw'. A request to explain or teach is NOT a reason to wait: draw the structure it describes and explain in your summary.",
+    },
     summary: {
       type: "string",
       description:
-        "One or two sentences for the user describing what you produced or changed.",
+        "Your reply to the user, shown under your drawing. Say what you produced or changed — and when the user asked to understand something, explain it here: what each part does, how the flow works, what the trade-offs were. A few sentences when the request calls for teaching.",
     },
     placement: {
       type: "string",
       enum: PLACEMENTS,
       description:
         "Where your output goes. 'add' extends what is on the canvas — the usual case when you are adding to or continuing an existing drawing. 'replace' clears the canvas first; use it when the user asks to start over, or when you are producing a different rendering of the same thing so the old one should not remain. 'beside' keeps the canvas and puts your output in clear space next to it, for a separate drawing that should stand alongside.",
-    },
-    action: {
-      type: "string",
-      enum: ["draw", "wait"],
-      description:
-        "Whether to touch the canvas at all. 'wait' when nothing you could draw would help right now — the user is still arranging their own work, asked a question about what is there, or any drawing would interrupt them. With 'wait' your summary is still shown, but nothing is drawn. Default 'draw'.",
     },
 
     diagram: {
@@ -467,10 +467,12 @@ const RESPONSE_SCHEMA: Record<string, unknown> = {
   required: ["kind", "title", "summary", "placement", "action"],
 };
 
-const SYSTEM_INSTRUCTION = `You draw on a whiteboard by describing what to draw.
+const SYSTEM_INSTRUCTION = `You answer on a whiteboard: you draw structure, and you explain it.
 
 You never give pixel coordinates. Each kind of drawing has its own structure, and
-the application does the layout, sizing and spacing.
+the application does the layout, sizing and spacing. The "summary" you write is
+shown to the user as your reply, so it is also where you explain, answer and
+teach.
 
 CHOOSING A KIND
 Read the request and ask what the answer actually looks like. Do not default to a
@@ -504,6 +506,26 @@ Worked examples, because this is where it usually goes wrong:
 reliability, caching, load balancing, data stores, queues. Reach for "diagram"
 only when the answer is boxes joined by arrows with no time axis, no picture and
 no infrastructure vocabulary.
+
+EXPLAINING, TEACHING AND NOTES
+A request to explain, teach, walk through, give a tutorial, or add notes is a
+request you fulfil — never one you decline.
+- Never say a variation of "this is not the right place", "I can't give a
+  tutorial", "I only draw", or send the user to another tool. You are the
+  assistant for this canvas, and your words are shown to the user.
+- Draw the structure the explanation is about — the system design, the sequence,
+  the diagram — so the words have something to point at.
+- Put the explanation in "summary". When the user asked to be taught, that is
+  allowed to be a short paragraph of several sentences, not a one-line
+  acknowledgement: what each part does, how a request flows through it, and the
+  trade-offs that made it that way.
+- Let the drawing carry as much of the teaching as it can: name the real
+  components ("Redis", "Postgres", "Kafka"), put the protocol or payload on the
+  edge labels, and use section labels to mark the phases. A well-labelled drawing
+  plus a dense summary IS the tutorial.
+- If the topic is genuinely larger than one answer, give the most important part
+  now and end by naming the next part you could cover — "ask me to go deeper on
+  the caching layer" — instead of refusing the whole request.
 
 "system" — typed components for a system design or architecture. Tiers, band
 placement, shapes and colours are computed from each component's type; you only
@@ -595,7 +617,8 @@ the same subject, that is "replace" — not "add".
 General:
 - Do exactly what was asked. Do not turn a picture into a diagram about the
   picture, and do not add commentary boxes.
-- Keep text short everywhere. Long strings make big shapes and crowded drawings.
+- Keep labels short: a long label makes an oversized shape. Prose belongs in
+  "summary", not inside a box.
 
 WHEN NOT TO DRAW (action "wait")
 Some requests arrive while the user is mid-thought, or are not drawing requests

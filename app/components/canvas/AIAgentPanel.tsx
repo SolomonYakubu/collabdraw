@@ -36,7 +36,7 @@ interface AIAgentPanelProps {
 
 const SUGGESTIONS = [
   "a flowchart for handling a support ticket",
-  "design a URL shortener",
+  "design a URL shortener and explain how it works",
   "a tic-tac-toe board",
   "a pendulum with its forces labelled",
 ];
@@ -215,7 +215,7 @@ function AIAgentPanel({
                 ) : (
                   <p
                     key={message.id}
-                    className="text-[13px] leading-relaxed"
+                    className="text-[13px] leading-relaxed whitespace-pre-line"
                     style={{ color: "var(--text-muted)" }}
                   >
                     {message.text}

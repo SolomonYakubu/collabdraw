@@ -18,8 +18,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /** The two calls that would otherwise reach a provider. */
 const model = vi.hoisted(() => ({
-  calls: [] as { provider: unknown; call: Record<string, unknown> }[],
-  streamed: [] as { provider: unknown; call: Record<string, unknown> }[],
+  calls: [] as { provider: unknown; call: Record<string, unknown>; options?: Record<string, unknown> }[],
+  streamed: [] as { provider: unknown; call: Record<string, unknown>; options?: Record<string, unknown> }[],
   reply: "{}",
   fail: null as Error | null,
 }));
@@ -28,13 +28,21 @@ const limiter = vi.hoisted(() => ({ allow: true, calls: [] as unknown[][] }));
 
 vi.mock("../../services/ai/llm", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../services/ai/llm")>()),
-  completeDrawing: async (provider: unknown, call: Record<string, unknown>) => {
-    model.calls.push({ provider, call });
+  completeDrawing: async (
+    provider: unknown,
+    call: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ) => {
+    model.calls.push({ provider, call, options });
     if (model.fail) throw model.fail;
     return model.reply;
   },
-  streamDrawing: async (provider: unknown, call: Record<string, unknown>) => {
-    model.streamed.push({ provider, call });
+  streamDrawing: async (
+    provider: unknown,
+    call: Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ) => {
+    model.streamed.push({ provider, call, options });
     if (model.fail) throw model.fail;
     return new ReadableStream<Uint8Array>({
       start(controller) {
@@ -211,6 +219,33 @@ describe("what it sends the model", () => {
     expect(sent().system).toContain("You never give pixel coordinates");
     expect(sent().userText).toContain("Current canvas:");
     expect(sent().userText).toContain("Request: draw a login flow");
+  });
+
+  it("tells the model to teach rather than refuse an explanation request", async () => {
+    /*
+     * "Give me a tutorial" used to be answered with "this is not the right
+     * place for a full tutorial" — the model read its one-line-summary brief as
+     * a prohibition. The instruction now names the refusal phrasings outright
+     * and routes explanation through the summary.
+     */
+    await POST(ask());
+
+    expect(sent().system).toContain("EXPLAINING, TEACHING AND NOTES");
+    expect(sent().system).toContain("not the right place");
+    expect(sent().system).toContain("Put the explanation in");
+  });
+
+  it("tells the model its summary is the user's reply, not a status line", async () => {
+    await POST(ask({ stream: true }));
+
+    const streamed = model.streamed[0] as {
+      call: { system?: string };
+      options?: { schema?: unknown };
+    };
+    expect(streamed.call.system).toContain("shown to the user as your reply");
+    // The schema field says the same thing where the model reads it.
+    const schema = JSON.stringify(streamed.options?.schema ?? {});
+    expect(schema).toContain("explain it here");
   });
 
   it("keeps the transcript to text turns, newest eight, user first", async () => {

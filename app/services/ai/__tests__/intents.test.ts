@@ -133,6 +133,43 @@ describe("parseDrawingIntent", () => {
     expect(intent?.action).toBe("wait");
   });
 
+  it("lets a summary run to an explanation's length before cutting it off", () => {
+    /*
+     * The summary is the assistant's only prose channel, and a teaching reply
+     * is a short paragraph, not a status line. The old 400-character cap
+     * truncated exactly the replies an "explain this" request asked for.
+     */
+    const explanation = Array.from(
+      { length: 12 },
+      (_, i) => `Step ${i} is where the request is transformed.`,
+    ).join(" ");
+    expect(explanation.length).toBeGreaterThan(400);
+
+    const intent = parseDrawingIntent({
+      kind: "system",
+      title: "T",
+      summary: explanation,
+      system: {
+        nodes: [{ id: "api", label: "API", type: "gateway" }],
+        edges: [],
+        zones: [],
+      },
+    });
+
+    expect(intent?.summary).toBe(explanation);
+  });
+
+  it("cuts off a runaway summary rather than flooding the panel", () => {
+    const intent = parseDrawingIntent({
+      kind: "grid",
+      title: "T",
+      summary: "x".repeat(10_000),
+      grid: { rows: 2, columns: 2, style: "board", headerRow: false, cells: [] },
+    });
+
+    expect(intent?.summary).toHaveLength(4000);
+  });
+
   it("keeps a decline that carries no drawable payload", () => {
     // The whole point of "wait" is that it draws nothing, so there is often no
     // payload to find. Returning null turned the decline into an error.

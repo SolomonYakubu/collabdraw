@@ -218,7 +218,12 @@ describe("the empty state", () => {
     // for; the suggestions are the documentation.
     open();
 
-    expect(screen.getByRole("button", { name: "design a URL shortener" })).toBeTruthy();
+    expect(
+      screen.getByRole(
+        "button",
+        { name: "design a URL shortener and explain how it works" },
+      ),
+    ).toBeTruthy();
   });
 
   it("fills the composer from a suggestion and leaves the caret in it", () => {
