@@ -304,6 +304,29 @@ describe("asking a peer, when nothing is stored anywhere", () => {
 
     expect(h.sent("request-canvas-state")).toEqual([]);
   });
+
+  it("does not let a stalled cluster lookup hold the join hostage", async () => {
+    /*
+     * A sleeping peer node on the shared Redis made `fetchSockets()` wait out
+     * the adapter's full five-second request timeout — the roster, the scene
+     * sync and the join itself all queued behind it. The lookup is bounded now:
+     * a joiner gets the scene and a roster from the local store in its place.
+     */
+    vi.useFakeTimers();
+    peer(h);
+    h.io.in = () => ({
+      fetchSockets: () => new Promise(() => {}),
+    });
+
+    const joining = join(h, validJoin);
+    await vi.advanceTimersByTimeAsync(1200);
+    await joining;
+
+    expect(h.sent("canvas-state-sync")).toEqual([]);
+    expect(h.sent("request-canvas-state")).toHaveLength(1);
+    const roster = h.sent("active-users").at(-1).payload.users;
+    expect(roster.map((user) => user.id)).toEqual(["user2", "user1"]);
+  });
 });
 describe("the roster, with a Redis adapter behind it", () => {
   it("assembles it from every socket in the cluster", async () => {

@@ -429,6 +429,22 @@ registers. It does not own the element list, so there is one source of truth.
   is itself the host, or that joins an empty room, is never moved.
 - `server/` (Socket.IO backend service, port 3001) relays messages and keeps
   the last known scene per room so a later joiner gets the drawing.
+- **A join is not held hostage by the cluster.** `join-room` used to await
+  `fetchSockets()` — whose cross-instance requests wait a library-default
+  **5000 ms** for every other node to reply — before the roster went out and
+  before hydration even started, so one sleeping peer stalled the room's join
+  for five seconds. The lookup is now bounded (`CLUSTER_ROSTER_TIMEOUT_MS`, 1.2s,
+  answered meanwhile by this instance's own store), the adapter's
+  `requestsTimeout` is configurable (`REDIS_REQUESTS_TIMEOUT_MS`, default 2000),
+  the room it is being left re-broadcasts without blocking, and the peer-request
+  branch reads the *local* roster — the branch that finds the peer sockets is
+  local anyway.
+- **A copy is two attempts, not a refusal.** `navigator.clipboard.writeText`
+  rejects while the document is not focused — the state the first click on a
+  freshly loaded page finds, which is how a copy button came to need two
+  presses. `services/clipboard.ts` focuses the window first and falls back to
+  the selection path (`execCommand`) when the API refuses, so the first click
+  works wherever either mechanism can.
 - **The client fails over between socket servers.** A deployment may run two
   (`NEXT_PUBLIC_SOCKET_URL` and `NEXT_PUBLIC_SOCKET_URL_BACKUP`); the client
   opens the primary and, when Socket.IO gives up reconnecting to it

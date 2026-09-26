@@ -66,6 +66,9 @@ function getPool() {
     ssl: sslFor(connectionString),
     max: 5,
     idleTimeoutMillis: 10_000,
+    // Bounded so a wedged pooler cannot park a join — the room handler reads
+    // the board row synchronously on the join path — for minutes.
+    connectionTimeoutMillis: 5000,
   });
   pool.on("error", (error) => {
     console.error("Postgres pool error:", error.message);

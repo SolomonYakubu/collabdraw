@@ -11,6 +11,16 @@ module.exports = {
   isProduction: process.env.NODE_ENV === "production",
   redisUrl: process.env.REDIS_URL || "",
   requireRedis: process.env.REQUIRE_REDIS === "true",
+  /**
+   * How long a cross-instance adapter request waits for the other nodes. The
+   * library default is 5000ms, which a sleeping peer turns into a five-second
+   * stall on every room join; the roster lookup races a shorter timeout of its
+   * own, so this only bounds the work the adapter leaves running.
+   */
+  redisRequestsTimeoutMs: parseInt(
+    process.env.REDIS_REQUESTS_TIMEOUT_MS || "2000",
+    10,
+  ),
   databaseUrl: process.env.DATABASE_URL || "",
   /**
    * How long the shutdown sequence gets before it stops waiting and exits.

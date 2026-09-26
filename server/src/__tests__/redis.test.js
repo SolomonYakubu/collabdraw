@@ -23,7 +23,11 @@ const load = ({ redisUrl = "", requireRedis = false } = {}) => {
   clients = [];
   adapterCalls = [];
 
-  cache.plant("./config.js", { redisUrl, requireRedis });
+  cache.plant("./config.js", {
+    redisUrl,
+    requireRedis,
+    redisRequestsTimeoutMs: 2000,
+  });
 
   cache.plant(
     "ioredis",
@@ -43,8 +47,8 @@ const load = ({ redisUrl = "", requireRedis = false } = {}) => {
   );
 
   cache.plant("@socket.io/redis-adapter", {
-    createAdapter: vi.fn((pub, sub) => {
-      adapterCalls.push({ pub, sub });
+    createAdapter: vi.fn((pub, sub, opts) => {
+      adapterCalls.push({ pub, sub, opts });
       return ADAPTER;
     }),
   });
@@ -181,7 +185,21 @@ describe("a deployment with Redis", () => {
 
     redis.configureSocketAdapter(io, built);
 
-    expect(adapterCalls).toEqual([{ pub: built.pub, sub: built.sub }]);
+    expect(adapterCalls).toEqual([
+      { pub: built.pub, sub: built.sub, opts: { requestsTimeout: 2000 } },
+    ]);
     expect(io.adapter).toHaveBeenCalledWith(ADAPTER);
+  });
+
+  it("bounds a cross-instance request well under the library's 5s", () => {
+    // One unresponsive peer node used to hold `fetchSockets()` — and so every
+    // join, rename and roster update behind it — for the whole five seconds the
+    // adapter waits for a reply it is never going to get.
+    const io = { adapter: vi.fn() };
+    const built = redis.initRedis();
+
+    redis.configureSocketAdapter(io, built);
+
+    expect(adapterCalls[0].opts).toEqual({ requestsTimeout: 2000 });
   });
 });

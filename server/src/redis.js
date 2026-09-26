@@ -47,7 +47,11 @@ function getStateClient() {
 
 function configureSocketAdapter(io, redisClients) {
   if (redisClients) {
-    io.adapter(createAdapter(redisClients.pub, redisClients.sub));
+    io.adapter(
+      createAdapter(redisClients.pub, redisClients.sub, {
+        requestsTimeout: config.redisRequestsTimeoutMs,
+      }),
+    );
   }
 }
 

@@ -42,6 +42,7 @@ import {
   writeUserName,
 } from "../services/collaboration/identity";
 import { subscribeToStorageKey } from "../services/storageSync";
+import { copyText } from "../services/clipboard";
 
 const CURSOR_THROTTLE_MS = 50;
 export const PENDING_THROTTLE_MS = 40;
@@ -1129,15 +1130,19 @@ export const CollaborationContextProvider: React.FC<{
    * document is not focused, and a copy that silently did nothing is worse than
    * one that admits it.
    */
+  /**
+   * Resolves with whether the link reached the clipboard, so the caller can say
+   * so. The copy itself handles the browser's focus and permission refusals —
+   * see `services/clipboard` — because a first click that silently did nothing
+   * and a second that works reads as a broken button.
+   */
   const copyShareableLink = useCallback(async (): Promise<boolean> => {
-    if (!shareableLink || !navigator.clipboard) {
+    if (!shareableLink) {
       return false;
     }
 
-    try {
-      await navigator.clipboard.writeText(shareableLink);
-    } catch (error) {
-      console.warn("Could not copy the share link:", error);
+    const copied = await copyText(shareableLink);
+    if (!copied) {
       return false;
     }
 
